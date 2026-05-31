@@ -84,8 +84,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Squelch", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
-# Static files
+# Static files — directories must exist before StaticFiles validates them
 # ---------------------------------------------------------------------------
+
+os.makedirs(_HLS_DIR, exist_ok=True)
+os.makedirs(_ART_DIR, exist_ok=True)
 
 app.mount("/hls", StaticFiles(directory=_HLS_DIR), name="hls")
 app.mount("/art", StaticFiles(directory=_ART_DIR), name="art")
