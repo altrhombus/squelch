@@ -57,11 +57,15 @@ open http://squelch.local:8000
 ```bash
 sudo apt-get install rtl-sdr gnuradio gr-osmosdr gr-rds ffmpeg python3-venv
 
-# Optional: HD Radio
-sudo apt-get install nrsc5
+# Optional: HD Radio (not in apt — build from source)
+sudo apt-get install cmake libfftw3-dev librtlsdr-dev build-essential
+git clone --depth 1 https://github.com/theori-io/nrsc5
+cmake -S nrsc5 -B nrsc5/build -DUSE_RTLSDR=ON && make -C nrsc5/build -j$(nproc)
+sudo make -C nrsc5/build install && sudo ldconfig
 
-# Blacklist conflicting kernel driver
-echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/blacklist-rtl.conf
+# Block the conflicting kernel DVB driver
+# ('blacklist' is the Linux kernel modprobe directive name)
+echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/rtl-blocklist.conf
 
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
@@ -161,7 +165,8 @@ The API is designed to be iOS-app-ready. The HLS stream URL works directly with 
 **`rtl_fm: error -3 (no device found)`**: The kernel DVB driver is loaded. Run:
 ```bash
 sudo modprobe -r dvb_usb_rtl28xxu
-echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/blacklist-rtl.conf
+# 'blacklist' below is the Linux kernel modprobe directive — the name is fixed
+echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/rtl-blocklist.conf
 ```
 
 **Poor AM reception**: AM direct sampling requires `-D 2` (handled automatically), but also needs a long-wire antenna. A 10–20m wire connected to the RTL-SDR's antenna input makes a large difference.

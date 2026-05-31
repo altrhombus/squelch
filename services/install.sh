@@ -19,18 +19,28 @@ sudo apt-get install -y \
   python3-pip \
   python3-venv
 
-# nrsc5 is optional (HD Radio); install if available
-if apt-cache show nrsc5 &>/dev/null; then
-  sudo apt-get install -y nrsc5
-  echo "    nrsc5 (HD Radio) installed"
+# nrsc5 (HD Radio) — not in Raspbian apt; build from source
+if command -v nrsc5 &>/dev/null; then
+  echo "    nrsc5 already installed — skipping build"
 else
-  echo "    nrsc5 not in apt — skipping HD Radio (can be built from source later)"
+  echo "==> Building nrsc5 (HD Radio decoder) from source"
+  sudo apt-get install -y cmake libfftw3-dev librtlsdr-dev build-essential
+  NRSC5_TMP=$(mktemp -d)
+  git clone --depth 1 https://github.com/theori-io/nrsc5 "$NRSC5_TMP/nrsc5"
+  cmake -S "$NRSC5_TMP/nrsc5" -B "$NRSC5_TMP/nrsc5/build" -DUSE_RTLSDR=ON
+  make -C "$NRSC5_TMP/nrsc5/build" -j"$(nproc)"
+  sudo make -C "$NRSC5_TMP/nrsc5/build" install
+  sudo ldconfig
+  rm -rf "$NRSC5_TMP"
+  echo "    nrsc5 installed"
 fi
 
-# Blacklist the kernel DVB driver that conflicts with RTL-SDR
-if ! grep -q "blacklist dvb_usb_rtl28xxu" /etc/modprobe.d/blacklist-rtl.conf 2>/dev/null; then
-  echo "==> Blacklisting conflicting kernel DVB driver"
-  echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/blacklist-rtl.conf
+# Block the kernel DVB driver that conflicts with RTL-SDR.
+# Note: 'blacklist' below is the Linux kernel modprobe directive name — it cannot be changed.
+BLOCKLIST_CONF=/etc/modprobe.d/rtl-blocklist.conf
+if ! grep -q "blacklist dvb_usb_rtl28xxu" "$BLOCKLIST_CONF" 2>/dev/null; then
+  echo "==> Blocking conflicting kernel DVB driver"
+  echo "blacklist dvb_usb_rtl28xxu" | sudo tee "$BLOCKLIST_CONF"
   sudo modprobe -r dvb_usb_rtl28xxu 2>/dev/null || true
 fi
 
