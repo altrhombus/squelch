@@ -185,11 +185,15 @@ class GnuRadioFM:
             time.sleep(0.5)
 
     def _connect_rds(self, tb, src):
+        # Track each stream connection so we can undo partial wiring on failure.
+        # Any exception — ImportError, itemsize mismatch, API change — must not
+        # leave orphaned blocks in the main flowgraph; tb.start() will refuse to
+        # run if any connected block has an unconnected output port.
+        stream_connections: list[tuple] = []
         try:
-            from gnuradio import gr, analog, filter as gr_filter, digital
+            from gnuradio import gr, analog, filter as gr_filter
             import rds
 
-            # Separate FM demod at lower rate for RDS
             rds_decim = int(self.SAMPLE_RATE / 250_000)
             rds_filter = gr_filter.freq_xlating_fir_filter_ccc(
                 rds_decim,
@@ -201,18 +205,23 @@ class GnuRadioFM:
             rds_decoder = rds.decoder(False, False)
             rds_parser = rds.parser(False, False, 0)
 
-            tb.connect(src, rds_filter, fm_demod, rds_decoder)
-            tb.msg_connect(rds_decoder, "out", rds_parser, "in")
-            tb.msg_connect(rds_parser, "out", tb.message_port_register_hier_out("rds_out"))
+            # Connect one hop at a time so we can undo on failure
+            tb.connect(src, rds_filter);       stream_connections.append((src, rds_filter))
+            tb.connect(rds_filter, fm_demod);  stream_connections.append((rds_filter, fm_demod))
+            tb.connect(fm_demod, rds_decoder); stream_connections.append((fm_demod, rds_decoder))
 
-            # Subscribe to RDS messages
-            rds_parser.set_msg_handler(
-                "out",
-                lambda msg: self._handle_rds_msg(msg),
-            )
+            tb.msg_connect(rds_decoder, "out", rds_parser, "in")
+            rds_parser.set_msg_handler("out", lambda msg: self._handle_rds_msg(msg))
             logger.info("gr-rds connected")
+
         except Exception as e:
             logger.info("gr-rds not available, skipping RDS: %s", e)
+            # Undo any stream connections already added to the flowgraph
+            for a, b in reversed(stream_connections):
+                try:
+                    tb.disconnect(a, b)
+                except Exception:
+                    pass
 
     def _handle_rds_msg(self, msg):
         if not self._rds_callback:
