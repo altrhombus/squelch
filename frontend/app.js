@@ -130,8 +130,12 @@ async function tune(freq, band) {
   if (!res.error) {
     elStationName.textContent = "Tuning…";
     elTrackInfo.textContent = "";
-    // Give the pipeline a moment to start, then (re)attach player
-    setTimeout(() => attachPlayer(), 2500);
+    // Player will attach when the server pushes "hls_ready" via WebSocket.
+    // The fallback timeout covers the case where the WS message is missed.
+    clearTimeout(window._hlsFallbackTimer);
+    window._hlsFallbackTimer = setTimeout(() => {
+      if (!isPlaying) attachPlayer();
+    }, 12000);
   }
 }
 
@@ -151,22 +155,35 @@ function attachPlayer() {
     hlsInstance = null;
   }
 
-  if (window.__nativeHLS || !window.Hls) {
-    // Safari — native HLS
+  // Detect native HLS support (Safari on macOS/iOS) via canPlayType,
+  // not via MediaSource — Safari has both MSE and native HLS.
+  const nativeHLS = player.canPlayType("application/vnd.apple.mpegurl") !== "";
+
+  if (nativeHLS) {
     player.src = src;
+    player.play().then(() => setPlayState(true)).catch(() => {});
   } else if (Hls.isSupported()) {
     hlsInstance = new Hls({
       lowLatencyMode: false,
       maxBufferLength: 30,
+      // Retry manifest aggressively — first segment takes ~3-5s to appear
+      manifestLoadingMaxRetry: 15,
+      manifestLoadingRetryDelay: 1000,
+      manifestLoadingMaxRetryTimeout: 8000,
     });
     hlsInstance.loadSource(src);
     hlsInstance.attachMedia(player);
+    // Wait for manifest before playing — calling play() before MANIFEST_PARSED
+    // results in silent failure because there's no media to play yet.
+    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+      player.play().then(() => setPlayState(true)).catch(() => {});
+    });
+    hlsInstance.on(Hls.Events.ERROR, (_, data) => {
+      if (data.fatal) console.warn("HLS fatal error:", data.type, data.details);
+    });
   } else {
     console.warn("HLS not supported in this browser");
-    return;
   }
-
-  player.play().then(() => setPlayState(true)).catch(() => setPlayState(false));
 }
 
 function setPlayState(playing) {
@@ -187,7 +204,15 @@ function connectWs() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
 
   ws.onmessage = (e) => {
-    try { applyMeta(JSON.parse(e.data)); } catch {}
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.event === "hls_ready") {
+        clearTimeout(window._hlsFallbackTimer);
+        if (!isPlaying) attachPlayer();
+        return;
+      }
+      applyMeta(msg);
+    } catch {}
   };
 
   ws.onclose = () => {

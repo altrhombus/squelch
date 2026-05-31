@@ -147,14 +147,7 @@
     </div>
   </div>
 
-  <!-- hls.js — loaded only for non-Safari browsers -->
-  <script>
-    // Safari has native HLS support; hls.js is only needed for Chrome/Firefox
-    if (!window.MediaSource) {
-      // Safari — native HLS
-      window.__nativeHLS = true;
-    }
-  </script>
+  <!-- hls.js — Safari uses canPlayType() detection in app.js, not this script -->
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
   <script src="/static/app.js"></script>
 </body>

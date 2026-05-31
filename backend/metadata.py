@@ -155,6 +155,19 @@ class MetadataState:
                 dead.add(ws)
         self._websockets -= dead
 
+    async def broadcast_event(self, event: str):
+        if not self._websockets:
+            return
+        import json
+        msg = json.dumps({"event": event})
+        dead = set()
+        for ws in self._websockets:
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.add(ws)
+        self._websockets -= dead
+
     async def save_history(self, db_conn):
         key = f"{self.artist}|{self.title}|{self.station_name}"
         if key == self._last_history_key or not (self.artist or self.title):

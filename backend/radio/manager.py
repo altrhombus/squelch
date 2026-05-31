@@ -239,14 +239,24 @@ class RadioManager:
         asyncio.create_task(self._log_ffmpeg_stderr())
 
     async def _log_ffmpeg_stderr(self):
+        proc = self._ffmpeg_proc
         try:
             while True:
-                line = await self._ffmpeg_proc.stderr.readline()
+                line = await proc.stderr.readline()
                 if not line:
                     break
-                logger.debug("ffmpeg: %s", line.decode(errors="replace").rstrip())
+                text = line.decode(errors="replace").rstrip()
+                low = text.lower()
+                if any(k in low for k in ("error", "invalid", "no such", "failed", "cannot")):
+                    logger.warning("ffmpeg: %s", text)
+                else:
+                    logger.debug("ffmpeg: %s", text)
         except Exception:
             pass
+        finally:
+            rc = proc.returncode
+            if rc is not None and rc != 0:
+                logger.error("ffmpeg exited with code %d", rc)
 
     async def _stop_ffmpeg(self):
         if self._ffmpeg_proc:
@@ -295,10 +305,18 @@ class RadioManager:
                     pass
 
     async def _signal_loop(self):
-        """Estimate signal bars from process liveness + basic heuristics."""
+        """Estimate signal bars; push hls_ready event when stream.m3u8 first appears."""
+        m3u8_path = os.path.join(self._segment_dir, "stream.m3u8")
+        hls_announced = False
         try:
             while True:
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
+
+                if not hls_announced and os.path.exists(m3u8_path):
+                    hls_announced = True
+                    logger.info("HLS stream ready: %s", m3u8_path)
+                    await self._meta.broadcast_event("hls_ready")
+
                 bars = self._estimate_signal_bars()
                 stereo = self._current_band == "fm"
                 self._meta.update_signal(bars, stereo)
