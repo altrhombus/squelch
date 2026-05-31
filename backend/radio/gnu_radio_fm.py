@@ -145,17 +145,15 @@ class GnuRadioFM:
 
         # FM stereo demodulator with PLL pilot detection (GR 3.10+).
         # Replaces the removed wbfm_receive block.
+        # de-emphasis is applied internally — pass tau here, not as a separate block.
         # Input: complex at DEMOD_RATE. Output: (0) L float, (1) R float at AUDIO_RATE.
+        tau = self._deemphasis_us * 1e-6
         wbfm = analog.wfm_rcv_pll(
             demod_rate=self.DEMOD_RATE,
             audio_decimation=self.AUDIO_DECIM,
+            deemph_tau=tau,
         )
         tb.wbfm = wbfm
-
-        # De-emphasis (75µs US default)
-        tau = self._deemphasis_us * 1e-6
-        deemph_l = analog.fm_deemph(fs=self.AUDIO_RATE, tau=tau)
-        deemph_r = analog.fm_deemph(fs=self.AUDIO_RATE, tau=tau)
 
         # Float→short for PCM output
         to_short_l = blocks.float_to_short(1, 32767)
@@ -170,8 +168,8 @@ class GnuRadioFM:
 
         # Audio connections
         tb.connect(src, chan_filter, wbfm)
-        tb.connect((wbfm, 0), deemph_l, to_short_l, (interleave, 0))
-        tb.connect((wbfm, 1), deemph_r, to_short_r, (interleave, 1))
+        tb.connect((wbfm, 0), to_short_l, (interleave, 0))
+        tb.connect((wbfm, 1), to_short_r, (interleave, 1))
         tb.connect(interleave, sink)
 
         # RDS path (best-effort — skip if gr-rds not installed)
