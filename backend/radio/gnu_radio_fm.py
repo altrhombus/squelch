@@ -178,14 +178,11 @@ class GnuRadioFM:
         logger.info("Starting GNU Radio FM flowgraph at %.3f MHz", self._freq_hz / 1e6)
         tb.start()
 
-        # Keep running until stop() is called
+        # Keep running until _stop_flowgraph() sets _running = False.
+        # tb.stop()/tb.wait() are called there (in the executor thread).
         while self._running:
             import time
             time.sleep(0.5)
-
-        tb.stop()
-        tb.wait()
-        self._tb = None
 
     def _connect_rds(self, tb, src):
         try:

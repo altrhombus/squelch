@@ -44,6 +44,7 @@ class RadioManager:
         self._gnu_radio: Optional[object] = None
         self._rtl_fm: Optional[object] = None
         self._nrsc5: Optional[object] = None
+        self._fifo_holder_fd: Optional[int] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -111,6 +112,12 @@ class RadioManager:
         if self._signal_task:
             self._signal_task.cancel()
             self._signal_task = None
+        if self._fifo_holder_fd is not None:
+            try:
+                os.close(self._fifo_holder_fd)
+            except OSError:
+                pass
+            self._fifo_holder_fd = None
 
     def status(self) -> dict:
         return {
@@ -172,8 +179,11 @@ class RadioManager:
 
     async def _stop_all_backends(self):
         if self._gnu_radio:
-            self._gnu_radio.stop()
+            gr = self._gnu_radio
             self._gnu_radio = None
+            # tb.wait() is a blocking C++ call — run in executor to avoid
+            # freezing the asyncio event loop and preventing Ctrl+C.
+            await asyncio.get_event_loop().run_in_executor(None, gr.stop)
         if self._rtl_fm:
             await self._rtl_fm.stop()
             self._rtl_fm = None
@@ -224,8 +234,19 @@ class RadioManager:
         self._ffmpeg_proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
+        asyncio.create_task(self._log_ffmpeg_stderr())
+
+    async def _log_ffmpeg_stderr(self):
+        try:
+            while True:
+                line = await self._ffmpeg_proc.stderr.readline()
+                if not line:
+                    break
+                logger.debug("ffmpeg: %s", line.decode(errors="replace").rstrip())
+        except Exception:
+            pass
 
     async def _stop_ffmpeg(self):
         if self._ffmpeg_proc:
@@ -244,12 +265,26 @@ class RadioManager:
     # ------------------------------------------------------------------
 
     def _ensure_fifo(self):
+        # Close any previous holder before recreating the FIFO.
+        if self._fifo_holder_fd is not None:
+            try:
+                os.close(self._fifo_holder_fd)
+            except OSError:
+                pass
+            self._fifo_holder_fd = None
+
         if os.path.exists(FIFO_PATH):
             if not stat.S_ISFIFO(os.stat(FIFO_PATH).st_mode):
                 os.remove(FIFO_PATH)
                 os.mkfifo(FIFO_PATH)
         else:
             os.mkfifo(FIFO_PATH)
+
+        # Open the FIFO O_RDWR so both ends are satisfied immediately.
+        # This prevents blocks.file_sink from blocking in its constructor
+        # waiting for a reader, which would deadlock the stop/retune path.
+        # The holder fd never reads or writes — it just keeps both ends open.
+        self._fifo_holder_fd = os.open(FIFO_PATH, os.O_RDWR | os.O_NONBLOCK)
 
     def _clear_hls_dir(self):
         for name in os.listdir(self._segment_dir):
