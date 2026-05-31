@@ -52,7 +52,9 @@ fi
 
 echo "==> Creating Python virtual environment"
 cd "$REPO_DIR"
-python3 -m venv .venv
+# --system-site-packages is required so the venv can see apt-installed packages
+# like gnuradio, gr-osmosdr, and gr-rds which cannot be installed via pip
+python3 -m venv --system-site-packages .venv
 .venv/bin/pip install --quiet --upgrade pip
 .venv/bin/pip install --quiet -r requirements.txt
 

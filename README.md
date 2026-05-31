@@ -67,7 +67,8 @@ sudo make -C nrsc5/build install && sudo ldconfig
 # ('blacklist' is the Linux kernel modprobe directive name)
 echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/rtl-blocklist.conf
 
-python3 -m venv .venv
+# --system-site-packages lets the venv see apt-installed gnuradio/gr-osmosdr/gr-rds
+python3 -m venv --system-site-packages .venv
 .venv/bin/pip install -r requirements.txt
 cp config/settings.yaml.example config/settings.yaml
 

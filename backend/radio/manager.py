@@ -192,8 +192,14 @@ class RadioManager:
         channels = 2 if is_stereo else 1
         bitrate = "128k" if is_stereo else "32k"
 
-        # nrsc5 outputs 44100, GNU Radio FM outputs 48000, rtl_fm outputs 44100 or 22050
-        input_rate = 48_000 if band == "fm" else 44_100
+        # GNU Radio FM outputs 50000 Hz (2MHz / 10 / 4), nrsc5 outputs 44100,
+        # rtl_fm outputs 44100 (AM) or 22050 (NFM scanner)
+        if band == "fm":
+            input_rate = 50_000
+        elif band == "scanner":
+            input_rate = 22_050
+        else:
+            input_rate = 44_100
 
         m3u8_path = os.path.join(self._segment_dir, "stream.m3u8")
 

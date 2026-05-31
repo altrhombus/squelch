@@ -19,12 +19,14 @@ logger = logging.getLogger(__name__)
 class GnuRadioFM:
     """
     Runs a GNU Radio FM stereo + RDS flowgraph in a background thread.
-    Writes interleaved stereo s16le PCM at 48kHz to `fifo_path`.
+    Writes interleaved stereo s16le PCM at 50kHz to `fifo_path`.
     Calls `rds_callback({ps, rt, pty, pi})` when RDS data arrives.
     """
 
     SAMPLE_RATE = 2_000_000   # SDR capture rate
-    AUDIO_RATE = 48_000        # Output PCM rate
+    DEMOD_RATE  = 200_000     # After channel filter decimation (2MHz / 10)
+    AUDIO_DECIM = 4           # wfm_rcv_pll audio decimation: 200kHz / 4 = 50kHz
+    AUDIO_RATE  = 50_000      # Output PCM rate
 
     def __init__(
         self,
@@ -103,7 +105,11 @@ class GnuRadioFM:
             self._build_and_run()
         except ImportError as e:
             logger.error(
-                "GNU Radio not installed. Install gnuradio gr-osmosdr gr-rds. Error: %s", e
+                "GNU Radio Python modules not found in venv. "
+                "Recreate the venv with: python3 -m venv --system-site-packages .venv\n"
+                "Then verify: sudo apt-get install gnuradio gr-osmosdr gr-rds\n"
+                "Import error: %s",
+                e,
             )
         except Exception as e:
             logger.exception("GNU Radio flowgraph error: %s", e)
@@ -127,21 +133,22 @@ class GnuRadioFM:
             src.set_gain(float(self._gain), 0)
         tb.src = src
 
-        # Channel filter — narrow or wide FM
+        # Channel filter: decimate 2MHz → DEMOD_RATE (200kHz), apply bandwidth filter.
+        # wfm_rcv_pll requires complex input at exactly DEMOD_RATE.
         bw = 130_000 if self._bandwidth == "narrow" else 200_000
         chan_filter = gr_filter.freq_xlating_fir_filter_ccc(
-            1,
+            self.SAMPLE_RATE // self.DEMOD_RATE,   # decimation = 10
             gr_filter.firdes.low_pass(1.0, self.SAMPLE_RATE, bw / 2, 10_000),
             0,
             self.SAMPLE_RATE,
         )
 
-        # FM stereo demodulator
-        quad_rate = self.SAMPLE_RATE
-        audio_decim = int(quad_rate / self.AUDIO_RATE)
-        wbfm = analog.wbfm_receive(
-            quad_rate=quad_rate,
-            audio_decimation=audio_decim,
+        # FM stereo demodulator with PLL pilot detection (GR 3.10+).
+        # Replaces the removed wbfm_receive block.
+        # Input: complex at DEMOD_RATE. Output: (0) L float, (1) R float at AUDIO_RATE.
+        wbfm = analog.wfm_rcv_pll(
+            demod_rate=self.DEMOD_RATE,
+            audio_decimation=self.AUDIO_DECIM,
         )
         tb.wbfm = wbfm
 
