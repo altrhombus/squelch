@@ -208,7 +208,10 @@ function connectWs() {
       const msg = JSON.parse(e.data);
       if (msg.event === "hls_ready") {
         clearTimeout(window._hlsFallbackTimer);
-        if (!isPlaying) attachPlayer();
+        // Re-attach if not playing, OR if the player hit an error/never loaded
+        // (readyState 0 = HAVE_NOTHING — happens when a 404 was received before
+        // the stream was ready and the media element is now stuck in error state).
+        if (!isPlaying || player.readyState < 2) attachPlayer();
         return;
       }
       applyMeta(msg);
@@ -399,11 +402,14 @@ freqInput.addEventListener("keydown", e => { if (e.key === "Enter") btnGo.click(
 
 // Play/pause
 btnPlay.addEventListener("click", () => {
-  if (!player.src && !hlsInstance) {
-    attachPlayer();
-  } else if (isPlaying) {
+  if (isPlaying) {
     player.pause();
     setPlayState(false);
+  } else if (player.error || player.readyState < 2) {
+    // Media element is in error or unloaded state — re-attach cleanly
+    attachPlayer();
+  } else if (!player.src && !hlsInstance) {
+    attachPlayer();
   } else {
     player.play().then(() => setPlayState(true)).catch(() => {});
   }
@@ -412,6 +418,7 @@ btnPlay.addEventListener("click", () => {
 player.addEventListener("play",  () => setPlayState(true));
 player.addEventListener("pause", () => setPlayState(false));
 player.addEventListener("ended", () => setPlayState(false));
+player.addEventListener("error", () => setPlayState(false));
 
 // Volume
 volume.addEventListener("input", () => { player.volume = parseFloat(volume.value); });
