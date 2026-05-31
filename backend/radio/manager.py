@@ -60,7 +60,21 @@ class RadioManager:
         stereo_mode = kwargs.get("stereo_mode", "auto")
 
         self._meta.update_tune(freq_hz, band)
+
+        # Stop GNU Radio first (waits for tb.wait() in executor).
         await self._stop_all_backends()
+
+        # Close the FIFO holder fd NOW so ffmpeg sees EOF on the FIFO and exits
+        # cleanly on SIGTERM. Without this, the holder keeps the write end open,
+        # ffmpeg blocks on read() indefinitely, and we end up SIGKILLing it after 3s.
+        if self._fifo_holder_fd is not None:
+            try:
+                os.close(self._fifo_holder_fd)
+            except OSError:
+                pass
+            self._fifo_holder_fd = None
+
+        await self._stop_ffmpeg()
 
         # Clear old HLS segments so the player starts fresh
         self._clear_hls_dir()

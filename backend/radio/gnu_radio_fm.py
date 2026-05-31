@@ -248,6 +248,11 @@ class GnuRadioFM:
             except Exception:
                 pass
             self._tb = None
+            # Force GC so Python releases the osmosdr source object immediately.
+            # Without this, the librtlsdr USB handle may still be held when the
+            # next flowgraph tries to claim the device, causing error -6.
+            import gc
+            gc.collect()
 
 
 # RDS PTY codes (RBDS — North America)

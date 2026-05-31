@@ -161,7 +161,14 @@ function attachPlayer() {
 
   if (nativeHLS) {
     player.src = src;
-    player.play().then(() => setPlayState(true)).catch(() => {});
+    player.play()
+      .then(() => setPlayState(true))
+      .catch(err => {
+        if (err && err.name === "NotAllowedError") {
+          elTrackInfo.textContent = "Tap ▶ to start";
+          elTrackInfo.classList.add("muted");
+        }
+      });
   } else if (Hls.isSupported()) {
     hlsInstance = new Hls({
       lowLatencyMode: false,
@@ -176,7 +183,15 @@ function attachPlayer() {
     // Wait for manifest before playing — calling play() before MANIFEST_PARSED
     // results in silent failure because there's no media to play yet.
     hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-      player.play().then(() => setPlayState(true)).catch(() => {});
+      player.play()
+        .then(() => setPlayState(true))
+        .catch(err => {
+          // Autoplay blocked by browser policy — show hint so user knows to click play
+          if (err && err.name === "NotAllowedError") {
+            elTrackInfo.textContent = "Tap ▶ to start";
+            elTrackInfo.classList.add("muted");
+          }
+        });
     });
     hlsInstance.on(Hls.Events.ERROR, (_, data) => {
       if (data.fatal) console.warn("HLS fatal error:", data.type, data.details);
