@@ -1,0 +1,508 @@
+/* =====================================================
+   Squelch — Mobile-first, dark theme
+   ===================================================== */
+
+:root {
+  --bg: #0f0f0f;
+  --surface: #1a1a1a;
+  --surface2: #242424;
+  --accent: #e05c00;
+  --accent-dim: #8a3800;
+  --text: #f0f0f0;
+  --muted: #888;
+  --bar-off: #2e2e2e;
+  --bar-on: #e05c00;
+  --record-off: #555;
+  --record-on: #e03030;
+  --radius: 12px;
+  --gap: 16px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 15px;
+  min-height: 100vh;
+  -webkit-text-size-adjust: 100%;
+}
+
+#app {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 12px var(--gap) env(safe-area-inset-bottom, 16px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+/* =====================================================
+   Now Playing
+   ===================================================== */
+
+#now-playing {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 14px;
+}
+
+#art-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+#art {
+  width: 72px;
+  height: 72px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--surface2);
+}
+
+#hd-badge {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  background: #007aff;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+#now-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+#pty-badge {
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 20px;
+  width: fit-content;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+#station-name {
+  font-size: 17px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#track-info {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.muted { color: var(--muted); }
+
+#signal-meter {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 16px;
+  margin-top: 4px;
+}
+
+.bar {
+  width: 5px;
+  border-radius: 2px;
+  background: var(--bar-off);
+  transition: background 0.3s, height 0.3s;
+}
+.bar[data-n="1"] { height: 5px; }
+.bar[data-n="2"] { height: 7px; }
+.bar[data-n="3"] { height: 9px; }
+.bar[data-n="4"] { height: 12px; }
+.bar[data-n="5"] { height: 16px; }
+.bar.active { background: var(--bar-on); }
+
+#stereo-indicator {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-left: 4px;
+  line-height: 1;
+  align-self: center;
+}
+
+/* =====================================================
+   Player controls
+   ===================================================== */
+
+#player-section {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 14px;
+}
+
+#player-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 0.15s;
+}
+.btn-icon:hover { background: var(--surface2); }
+.btn-icon svg { width: 32px; height: 32px; }
+
+#volume-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+#volume-wrap svg { color: var(--muted); flex-shrink: 0; }
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface2);
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  cursor: pointer;
+}
+
+#btn-record svg { color: var(--record-off); transition: color 0.2s; }
+#btn-record.active svg { color: var(--record-on); }
+
+/* =====================================================
+   Tuner
+   ===================================================== */
+
+#tuner-section {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+#band-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.band-tab {
+  flex: 1;
+  background: var(--surface2);
+  border: none;
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 8px 0;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.band-tab.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+#freq-display {
+  text-align: center;
+  margin-bottom: 10px;
+}
+#freq-value {
+  font-size: 42px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -1px;
+}
+#freq-unit {
+  font-size: 16px;
+  color: var(--muted);
+  margin-left: 4px;
+}
+
+#dial-wrap {
+  position: relative;
+  padding-bottom: 6px;
+  margin-bottom: 12px;
+}
+#dial { width: 100%; }
+
+#dial-ticks {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 2px;
+  pointer-events: none;
+}
+#dial-ticks span {
+  font-size: 9px;
+  color: var(--muted);
+}
+
+#freq-input-wrap {
+  display: flex;
+  gap: 8px;
+}
+#freq-input {
+  flex: 1;
+  background: var(--surface2);
+  border: 1px solid #333;
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 15px;
+  outline: none;
+}
+#freq-input:focus { border-color: var(--accent); }
+
+#btn-go {
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 8px 18px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+#btn-go:hover { background: #c74f00; }
+
+/* =====================================================
+   Presets
+   ===================================================== */
+
+#presets-section, #recordings-section {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 14px;
+}
+
+#presets-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+h2 {
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+#presets-header h2 { margin-bottom: 0; }
+
+.btn-small {
+  background: var(--surface2);
+  border: none;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-small:hover { background: #333; }
+.btn-small.primary { background: var(--accent); color: #fff; }
+.btn-small.primary:hover { background: #c74f00; }
+
+#presets-list, #recordings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.preset-item, .recording-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.preset-item:hover { background: #2e2e2e; }
+
+.preset-freq {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 58px;
+}
+.preset-name { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preset-band {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.btn-delete {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  transition: color 0.15s;
+}
+.btn-delete:hover { color: #e03030; }
+
+.recording-name { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recording-dur { font-size: 12px; color: var(--muted); flex-shrink: 0; }
+
+.empty-hint { color: var(--muted); font-size: 13px; text-align: center; padding: 12px 0; }
+
+/* =====================================================
+   Quality drawer
+   ===================================================== */
+
+#quality-drawer {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 14px;
+}
+
+#quality-drawer summary {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#quality-drawer summary::before {
+  content: "▸";
+  transition: transform 0.2s;
+}
+#quality-drawer[open] summary::before { transform: rotate(90deg); }
+
+.drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.drawer-body label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  gap: 10px;
+}
+
+.drawer-body select {
+  background: var(--surface2);
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.drawer-body input[type="range"] { width: 120px; }
+
+/* =====================================================
+   Modal
+   ===================================================== */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-box {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 20px;
+  width: min(360px, calc(100vw - 40px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.modal-box h3 { font-size: 16px; }
+
+.modal-box input[type="text"] {
+  background: var(--surface2);
+  border: 1px solid #333;
+  border-radius: 8px;
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 15px;
+  outline: none;
+  width: 100%;
+}
+.modal-box input[type="text"]:focus { border-color: var(--accent); }
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* =====================================================
+   Utils
+   ===================================================== */
+
+.hidden { display: none !important; }
+.badge { display: inline-block; }
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f2f2f7;
+    --surface: #ffffff;
+    --surface2: #f2f2f7;
+    --text: #111;
+    --muted: #666;
+    --bar-off: #ccc;
+    --record-off: #999;
+  }
+  .btn-small, .band-tab { color: #111; }
+  #freq-input, .drawer-body select, .modal-box input[type="text"] { color: #111; }
+}

@@ -1,0 +1,23 @@
+[Unit]
+Description=Squelch SDR Radio Streamer
+After=network.target sound.target
+Wants=network.target
+
+[Service]
+Type=simple
+# Edit these two lines to match your install path and user
+User=pi
+WorkingDirectory=/home/pi/squelch
+
+ExecStart=/home/pi/squelch/.venv/bin/python -m backend.main
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Give the SDR USB device access
+# If you get permission errors on /dev/bus/usb, run: sudo usermod -aG plugdev pi
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

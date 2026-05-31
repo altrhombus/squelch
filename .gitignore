@@ -1,0 +1,17 @@
+recordings/
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+config/settings.yaml
+/tmp/
+*.m4a
+*.mp3
+*.aac
+*.m3u8
+*.ts
+.DS_Store

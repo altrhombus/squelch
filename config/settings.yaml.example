@@ -1,0 +1,46 @@
+# Squelch configuration — copy to config/settings.yaml and edit
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+hls:
+  # Temporary directory for HLS segments — wiped on startup
+  segment_dir: "/tmp/sdr-hls"
+  # Seconds per segment (lower = more responsive channel changes, higher = less I/O)
+  segment_duration: 3
+  # Number of segments to keep in the playlist window
+  playlist_size: 10
+
+sdr:
+  # RTL-SDR device index (0 = first dongle)
+  device_index: 0
+  # AGC enabled by default; set to a number (0-50) to override with manual gain
+  gain: "auto"
+  # PPM frequency correction for your specific dongle (run rtl_test -p to find yours)
+  ppm_correction: 0
+  # De-emphasis time constant: 75 (USA/South Korea) or 50 (Europe/Australia)
+  deemphasis_us: 75
+
+recordings:
+  # Directory where recordings are saved
+  output_dir: "~/recordings"
+  # Default audio quality for recordings: 64, 128, or 192 (kbps)
+  default_bitrate: 128
+
+# Icecast2 secondary output (optional — requires icecast2 installed and running)
+icecast:
+  enabled: false
+  host: "localhost"
+  port: 8001
+  source_password: "changeme"
+  mount: "/radio"
+
+# Default station presets loaded on first run (can be edited in the UI)
+default_presets:
+  - name: "Example FM"
+    frequency: 91.1
+    band: "fm"
+  - name: "Example AM"
+    frequency: 1000
+    band: "am"
