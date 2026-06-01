@@ -89,6 +89,7 @@ class MetadataState:
             changed = True
         if changed:
             asyncio.ensure_future(self.broadcast())
+            asyncio.ensure_future(self.save_history())
 
     def update_nrsc5(
         self,
@@ -129,6 +130,7 @@ class MetadataState:
                 logger.warning("Failed to copy cover art: %s", e)
         if changed:
             asyncio.ensure_future(self.broadcast())
+            asyncio.ensure_future(self.save_history())
 
     def update_signal(self, bars: int, stereo: bool = None):
         self.signal_bars = max(0, min(5, bars))
@@ -174,17 +176,24 @@ class MetadataState:
                 dead.add(ws)
         self._websockets -= dead
 
-    async def save_history(self, db_conn):
+    async def save_history(self):
         key = f"{self.artist}|{self.title}|{self.station_name}"
         if key == self._last_history_key or not (self.artist or self.title):
             return
         self._last_history_key = key
-        await db_conn.execute(
-            """INSERT INTO history (station_name, artist, title, pty, frequency, band)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (self.station_name, self.artist, self.title, self.pty, self.frequency, self.band),
-        )
-        await db_conn.commit()
+        from .db import get_db
+        db = await get_db()
+        try:
+            await db.execute(
+                """INSERT INTO history (station_name, artist, title, pty, frequency, band)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (self.station_name, self.artist, self.title, self.pty, self.frequency, self.band),
+            )
+            await db.commit()
+        except Exception as e:
+            logger.warning("Failed to save history: %s", e)
+        finally:
+            await db.close()
 
 
 def _parse_rt(rt: str) -> tuple[Optional[str], Optional[str]]:

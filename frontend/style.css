@@ -84,11 +84,13 @@ html, body {
   gap: 14px;
 }
 
-/* Art container — centered, square */
+/* Art container — centered, square. Use explicit height (not aspect-ratio)
+   because aspect-ratio on a flex item can compute to 0 when the container
+   has no main-axis constraint, making overflow:hidden clip everything. */
 #art-wrap {
   position: relative;
-  width: min(200px, 58%);
-  aspect-ratio: 1;
+  width: min(200px, 56vw);
+  height: min(200px, 56vw);
   align-self: center;
   flex-shrink: 0;
   border-radius: 10px;
