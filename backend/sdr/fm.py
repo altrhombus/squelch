@@ -54,6 +54,84 @@ def _soft_limit(x: np.ndarray) -> np.ndarray:
     return x.clip(-1.0, 1.0)
 
 
+class _SpectralSubtractor:
+    """
+    Single-channel online spectral noise subtraction using overlap-add STFT.
+
+    When update_noise=True (silence / hiss detected by the AGC gate), the
+    per-bin noise power spectral density is estimated with an EMA.  During
+    music (update_noise=False) the stored estimate is subtracted from each
+    FFT bin while preserving phase, with a hard spectral floor at floor_frac
+    of the input amplitude to prevent musical-noise chirping artefacts.
+
+    Uses sqrt-Hann analysis and synthesis windows; at 50 % overlap these
+    satisfy the COLA constraint so unprocessed frames reconstruct exactly.
+    Input/output lengths are always matched; the first call may contain a
+    brief (n_fft - hop) sample latency padding of zeros (~10 ms at 48 kHz).
+    """
+
+    def __init__(self, n_fft: int = 1024, hop: int = 512,
+                 over_sub: float = 1.0, floor_frac: float = 0.1,
+                 noise_alpha: float = 0.9):
+        self._n_fft       = n_fft
+        self._hop         = hop
+        self._over_sub    = over_sub      # subtraction factor (1.0 = no over-sub)
+        self._floor_frac  = floor_frac    # floor as fraction of input amplitude
+        self._noise_alpha = noise_alpha   # EMA smoothing of noise PSD estimate
+
+        self._win         = np.sqrt(np.hanning(n_fft)).astype(np.float64)
+        self._noise_psd   = np.zeros(n_fft // 2 + 1, dtype=np.float64)
+        self._noise_ready = False
+
+        self._in_q  = np.empty(0, dtype=np.float32)
+        self._out_q = np.empty(0, dtype=np.float32)
+        self._ola   = np.zeros(n_fft,    dtype=np.float64)
+
+    def process(self, x: np.ndarray, update_noise: bool) -> np.ndarray:
+        N = len(x)
+        self._in_q = np.concatenate([self._in_q, x.astype(np.float32)])
+
+        while len(self._in_q) >= self._n_fft:
+            frame = self._in_q[:self._n_fft].astype(np.float64) * self._win
+            X     = np.fft.rfft(frame)
+            power = X.real ** 2 + X.imag ** 2
+
+            if update_noise:
+                if not self._noise_ready:
+                    self._noise_psd   = power.copy()
+                    self._noise_ready = True
+                else:
+                    self._noise_psd = (self._noise_alpha * self._noise_psd
+                                       + (1.0 - self._noise_alpha) * power)
+                X_out = X                     # pass through while estimating
+            elif self._noise_ready:
+                floor_p = (self._floor_frac ** 2) * power
+                clean_p = np.maximum(power - self._over_sub * self._noise_psd,
+                                     floor_p)
+                X_out   = X * np.sqrt(clean_p / (power + 1e-30))
+            else:
+                X_out = X                     # no estimate yet, pass through
+
+            frame_out       = np.fft.irfft(X_out, n=self._n_fft) * self._win
+            self._ola      += frame_out
+            ready           = self._ola[:self._hop].copy()
+            self._ola       = np.roll(self._ola, -self._hop)
+            self._ola[-self._hop:] = 0.0
+            self._out_q     = np.concatenate([self._out_q,
+                                               ready.astype(np.float32)])
+            self._in_q      = self._in_q[self._hop:]
+
+        if len(self._out_q) >= N:
+            out         = self._out_q[:N].copy()
+            self._out_q = self._out_q[N:]
+        else:
+            out         = np.concatenate([self._out_q,
+                                           np.zeros(N - len(self._out_q),
+                                                    dtype=np.float32)])
+            self._out_q = np.empty(0, dtype=np.float32)
+        return out
+
+
 class FmStereoDemodulator:
     """
     Stateful FM stereo demodulator. Call process() once per IQ block.
@@ -155,6 +233,10 @@ class FmStereoDemodulator:
         # release (α=0.005, τ≈22 s) which prevents noise pumping at steady state.
         self._agc_gain   = 1.0
         self._agc_warmup = 20
+
+        # --- spectral noise subtraction (one instance per channel) ---
+        self._ss_l = _SpectralSubtractor()
+        self._ss_r = _SpectralSubtractor()
 
     def process(self, iq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -306,21 +388,25 @@ class FmStereoDemodulator:
         l32 = ((1.0 - shelf_depth) * l32 + shelf_depth * lp_l).astype(np.float32)
         r32 = ((1.0 - shelf_depth) * r32 + shelf_depth * lp_r).astype(np.float32)
 
-        # 10b. Asymmetric audio AGC + soft-knee limiter.
+        # 10b. Spectral noise subtraction.
+        #      Compute pre-subtraction RMS to drive both the denoiser gate and
+        #      the AGC gate below.  During silence (rms ≤ _AGC_GATE) the per-bin
+        #      noise PSD is updated; during music it is subtracted per-bin with a
+        #      spectral floor at 10 % amplitude to prevent musical-noise artefacts.
+        _AGC_GATE = 0.025
+        rms       = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
+        in_noise  = rms <= _AGC_GATE
+        l32       = self._ss_l.process(l32, in_noise)
+        r32       = self._ss_r.process(r32, in_noise)
+
+        # 10c. Asymmetric audio AGC + soft-knee limiter.
         #     Fast attack (α=0.3, τ≈240 ms): quickly pull gain down when loud
         #     content resumes after a quiet passage — prevents the 5-second
         #     distorted surge that occurred with symmetric slow AGC.
         #     Slow release (α=0.005, τ≈22 s): gain barely rises during a
         #     10-second break (+1.5 dB), so the noise floor stays quiet and
         #     there is little overshoot when the next song hits.
-        #
-        #     Gate: skip gain update when only hiss/silence is present.
-        #     Pre-AGC RMS during music ≈ 0.11; during silence/hiss ≈ 0.005–0.015.
-        #     Without gating the release pumps gain upward into hiss, making each
-        #     quiet passage progressively louder until music returns and the fast
-        #     attack slams it back (the "hiss creep + loud first second" pattern).
-        _AGC_GATE = 0.025
-        rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
+        #     Gate: skip gain update during silence/hiss (rms ≤ _AGC_GATE).
         target_gain = 0.12 / rms
         if rms > _AGC_GATE:
             if self._agc_warmup > 0:
