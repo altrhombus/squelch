@@ -123,7 +123,12 @@ class FmStereoDemodulator:
         # from noise burst) and slow release (rising blend → avoid flicker on
         # marginal signals).  At ~109 ms/block: α=0.3 → τ≈250 ms fall,
         # α=0.05 → τ≈1.5 s rise.
+        # On the very first block we snap to blend_raw directly so there is no
+        # slow ramp-up from 0 after every retune (e.g. when the user changes
+        # gain, a new demodulator is created and blend would otherwise take
+        # ~6 s to reach its steady-state value).
         self._blend_smooth = 0.0
+        self._blend_init   = False   # True after first process() call
 
         # --- audio AGC state ---
         # Very slow update (α=0.02 → τ≈5 s) prevents pumping artefacts.
@@ -211,22 +216,30 @@ class FmStereoDemodulator:
         ))
 
         pilot_gate = float(np.clip((pilot_rms - 0.02) / 0.06, 0.0, 1.0))
-        iq_gate    = float(np.clip((iq_rms    - 0.05) / 0.15, 0.0, 1.0))
 
         if self._stereo_mode == "mono":
             blend_raw = 0.0
         elif self._stereo_mode == "force":
-            # Bypass noise and IQ gates; stereo if the station broadcasts a
-            # pilot, regardless of signal quality.  Expect more hiss on weak
-            # signals — this is the user's explicit choice.
+            # Bypass noise gate; stereo whenever the station broadcasts a
+            # pilot, regardless of signal quality.  User accepts more hiss.
             blend_raw = pilot_gate
         else:
-            blend_raw = pilot_gate * iq_gate * noise_gate
+            # iq_gate removed: noise_gate already measures actual SNR from
+            # physics (65-90 kHz discriminator noise floor) and correctly
+            # handles even sub-threshold signals (noise/pilot≫1 → gate=0).
+            # iq_gate was a redundant proxy that created a cliff at iq_rms=0.10
+            # where the gain controller crossing that threshold suddenly injected
+            # L-R stereo noise into an otherwise clean mono signal.
+            blend_raw = pilot_gate * noise_gate
 
         # Smooth blend with asymmetric time constants to prevent block-edge
         # clicks and flicker on marginal signals.
-        alpha = 0.3 if blend_raw < self._blend_smooth else 0.05
-        self._blend_smooth += alpha * (blend_raw - self._blend_smooth)
+        if not self._blend_init:
+            self._blend_smooth = blend_raw   # snap on first block; no 6-s ramp-up
+            self._blend_init   = True
+        else:
+            alpha = 0.3 if blend_raw < self._blend_smooth else 0.05
+            self._blend_smooth += alpha * (blend_raw - self._blend_smooth)
         blend = self._blend_smooth
         self.last_blend = blend
 
