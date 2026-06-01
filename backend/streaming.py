@@ -71,9 +71,12 @@ class AacEncoder:
 
         self._buf       = _DrainBuffer()
         self._container = av.open(self._buf, format="adts", mode="w")
-        self._stream    = self._container.add_stream("aac", rate=AUDIO_RATE)
-        self._stream.channels  = self._channels
-        self._stream.bit_rate  = self._bitrate
+        # Pass layout to add_stream — PyAV 12+ made .channels read-only;
+        # channel count is derived from the layout, not set independently.
+        self._stream    = self._container.add_stream(
+            "aac", rate=AUDIO_RATE, layout=self._layout
+        )
+        self._stream.bit_rate = self._bitrate
 
     def encode(self, *arrays: np.ndarray) -> bytes:
         """
