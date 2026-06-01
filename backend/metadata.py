@@ -29,6 +29,8 @@ class MetadataState:
         self.has_art: bool = False
         # lifecycle state pushed to the frontend for status display
         self.state: str = "idle"           # idle | tuning | buffering | live
+        # signal diagnostics (updated each signal loop tick)
+        self.diag: dict = {}
         self._last_history_key: Optional[str] = None
         self._websockets: set[WebSocket] = set()
 
@@ -48,6 +50,7 @@ class MetadataState:
             "has_art": self.has_art,
             "art_url": "/art/current.jpg" if self.has_art else None,
             "state": self.state,
+            "diag":  self.diag,
         }
 
     def update_tune(self, frequency: float, band: str):

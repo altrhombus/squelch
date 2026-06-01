@@ -45,17 +45,23 @@ class FmStereoDemodulator:
     DEMOD_RATE  = _DEMOD_RATE
     AUDIO_RATE  = _AUDIO_RATE
 
-    # Pilot RMS from the most recent block — used externally for signal bars.
-    last_pilot_rms: float = 0.0
+    # Per-block metrics — read by pipeline.py for the diagnostics panel.
+    last_pilot_rms:    float = 0.0
+    last_iq_rms:       float = 0.0   # raw ADC signal power
+    last_composite_rms: float = 0.0  # FM discriminator output
+    last_blend:        float = 0.0   # stereo blend factor 0-1
+    last_audio_rms:    float = 0.0   # decoded output level
 
     def __init__(self, deemphasis_us: int = 75):
         # --- audio bandpass/lowpass filter coefficients (SOS) ---
-        # 6th-order LPF at 14.5 kHz gives ~20 dB attenuation at 19 kHz
-        # (vs ~9 dB for 4th-order at 15 kHz), eliminating pilot bleed.
-        self._lpr_sos     = butter(6, 14_500,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        # 8th-order LPF at 15 kHz: passes the full FM audio band (-3 dB at
+        # 15 kHz) while providing ~26 dB attenuation at 19 kHz to reject
+        # pilot bleed.  The previous 6th-order at 14.5 kHz was attenuating
+        # the top octave slightly, making the audio sound dull.
+        self._lpr_sos     = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
         self._pilot_sos   = butter(4, [17_000, 21_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_sos     = butter(4, [23_000, 53_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
-        self._lmr_lp_sos  = butter(6, 14_500,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        self._lmr_lp_sos  = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
 
         # --- per-block filter states ---
         self._lpr_zi      = _zero_zi(self._lpr_sos)
@@ -120,8 +126,11 @@ class FmStereoDemodulator:
         #
         #    blend = 0 (mono) below pilot_rms 0.02, = 1 (full stereo) above 0.08.
         pilot_rms = float(np.sqrt(np.mean(pilot ** 2)))
-        self.last_pilot_rms = pilot_rms
+        self.last_pilot_rms    = pilot_rms
+        self.last_iq_rms       = float(np.sqrt(np.mean(np.abs(iq) ** 2)))
+        self.last_composite_rms = float(np.sqrt(np.mean(composite ** 2)))
         blend = float(np.clip((pilot_rms - 0.02) / 0.06, 0.0, 1.0))
+        self.last_blend        = blend
 
         l = (lpr + lmr * blend).astype(np.float32)
         r = (lpr - lmr * blend).astype(np.float32)
@@ -130,4 +139,7 @@ class FmStereoDemodulator:
         l, self._de_l_zi = lfilter(self._de_b, self._de_a, l, zi=self._de_l_zi)
         r, self._de_r_zi = lfilter(self._de_b, self._de_a, r, zi=self._de_r_zi)
 
-        return l.astype(np.float32), r.astype(np.float32), composite.astype(np.float32)
+        l32 = l.astype(np.float32)
+        r32 = r.astype(np.float32)
+        self.last_audio_rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2))
+        return l32, r32, composite.astype(np.float32)

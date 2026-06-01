@@ -133,6 +133,39 @@
       </div>
     </details>
 
+    <!-- Signal diagnostics (power user panel) -->
+    <details id="diagnostics-drawer">
+      <summary>Signal Diagnostics</summary>
+      <div class="diag-body">
+        <div class="diag-row">
+          <span class="diag-label">IQ level <span class="diag-hint">(antenna/ADC)</span></span>
+          <div class="diag-track"><div id="diag-iq-bar" class="diag-fill"></div></div>
+          <span id="diag-iq-val" class="diag-num">—</span>
+        </div>
+        <div class="diag-row" id="diag-comp-row">
+          <span class="diag-label">FM composite <span class="diag-hint">(demod output)</span></span>
+          <div class="diag-track"><div id="diag-comp-bar" class="diag-fill"></div></div>
+          <span id="diag-comp-val" class="diag-num">—</span>
+        </div>
+        <div class="diag-row" id="diag-pilot-row">
+          <span class="diag-label">Pilot <span class="diag-hint">(19 kHz, stereo SNR)</span></span>
+          <div class="diag-track"><div id="diag-pilot-bar" class="diag-fill"></div></div>
+          <span id="diag-pilot-val" class="diag-num">—</span>
+        </div>
+        <div class="diag-row" id="diag-blend-row">
+          <span class="diag-label">Stereo blend <span class="diag-hint">(L−R applied)</span></span>
+          <div class="diag-track"><div id="diag-blend-bar" class="diag-fill"></div></div>
+          <span id="diag-blend-val" class="diag-num">—</span>
+        </div>
+        <div class="diag-row">
+          <span class="diag-label">Audio level <span class="diag-hint">(decoded output)</span></span>
+          <div class="diag-track"><div id="diag-audio-bar" class="diag-fill"></div></div>
+          <span id="diag-audio-val" class="diag-num">—</span>
+        </div>
+        <button id="btn-copy-diag" class="btn-small" style="margin-top:8px">Copy debug info</button>
+      </div>
+    </details>
+
   </div><!-- #app -->
 
   <!-- Save preset modal -->

@@ -148,6 +148,15 @@ class RadioManager:
                 await asyncio.sleep(1)
                 bars, stereo = self._estimate_signal()
                 self._meta.update_signal(bars, stereo)
+                # Populate diagnostics panel
+                if self._pipeline:
+                    m = self._pipeline.signal_metrics
+                    m["band"] = self._current_band
+                    self._meta.diag = m
+                elif self._nrsc5 and self._nrsc5.is_running():
+                    self._meta.diag = {"band": "hd", "hd_locked": self._meta.hd_locked}
+                else:
+                    self._meta.diag = {}
                 await self._meta.broadcast()
         except asyncio.CancelledError:
             pass

@@ -134,6 +134,9 @@ class RdsDecoder:
         # PTY debounce: require the same value twice before reporting
         self._pty_candidate: int       = 0
         self._pty_seen: int            = 0
+        # PI debounce: a station's PI code never changes; varying PI = bit errors
+        self._pi_candidate: Optional[int] = None
+        self._pi_seen: int                = 0
 
     # ------------------------------------------------------------------
 
@@ -261,11 +264,19 @@ class RdsDecoder:
         group_type = (b >> 12) & 0xF
         b0         = (b >> 11) & 1
         pty_raw    = (b >> 5) & 0x1F
-        self._pi   = a
+        pi_raw     = a
 
-        # PTY debounce: the same value must appear in two consecutive groups
-        # before we accept it.  A single CRC false-positive can produce any
-        # PTY code, so without this the badge cycles through random values.
+        # PI debounce: a station's PI code never changes; if it varies between
+        # groups the data bits are corrupted.  Require the same value twice.
+        if pi_raw == self._pi_candidate:
+            self._pi_seen += 1
+        else:
+            self._pi_candidate = pi_raw
+            self._pi_seen = 1
+        if self._pi_seen >= 2:
+            self._pi = pi_raw
+
+        # PTY debounce: same reason — require same value twice.
         if pty_raw == self._pty_candidate:
             self._pty_seen += 1
         else:
@@ -293,7 +304,13 @@ class RdsDecoder:
                     self._ps_chars[s][0] + self._ps_chars[s][1]
                     for s in range(4)
                 ).rstrip()
-                update["ps"] = ps
+                # Reject PS strings with non-printable characters — these are
+                # almost always bit errors.  RDS PS uses printable ASCII only.
+                if ps and all(0x20 <= ord(c) < 0x7F for c in ps):
+                    update["ps"] = ps
+                else:
+                    # Partial corruption — discard and keep searching
+                    self._ps_chars.clear()
 
         elif group_type == 2 and b0 == 0:   # Group 2A — RadioText (64 chars)
             seg    = b & 0xF
