@@ -286,15 +286,23 @@ class FmStereoDemodulator:
         #     Slow release (α=0.005, τ≈22 s): gain barely rises during a
         #     10-second break (+1.5 dB), so the noise floor stays quiet and
         #     there is little overshoot when the next song hits.
+        #
+        #     Gate: skip gain update when only hiss/silence is present.
+        #     Pre-AGC RMS during music ≈ 0.11; during silence/hiss ≈ 0.005–0.015.
+        #     Without gating the release pumps gain upward into hiss, making each
+        #     quiet passage progressively louder until music returns and the fast
+        #     attack slams it back (the "hiss creep + loud first second" pattern).
+        _AGC_GATE = 0.025
         rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
         target_gain = 0.12 / rms
-        if self._agc_warmup > 0:
-            self._agc_warmup -= 1
-            alpha_agc = 0.3   # fast convergence for first ~2 s after tuning
-        else:
-            alpha_agc = 0.3 if target_gain < self._agc_gain else 0.005
-        self._agc_gain += alpha_agc * (target_gain - self._agc_gain)
-        self._agc_gain = float(np.clip(self._agc_gain, 0.1, 10.0))
+        if rms > _AGC_GATE:
+            if self._agc_warmup > 0:
+                self._agc_warmup -= 1
+                alpha_agc = 0.3   # fast convergence for first ~2 s after tuning
+            else:
+                alpha_agc = 0.3 if target_gain < self._agc_gain else 0.005
+            self._agc_gain += alpha_agc * (target_gain - self._agc_gain)
+            self._agc_gain = float(np.clip(self._agc_gain, 0.1, 10.0))
         l32 = _soft_limit((l32 * self._agc_gain).astype(np.float64)).astype(np.float32)
         r32 = _soft_limit((r32 * self._agc_gain).astype(np.float64)).astype(np.float32)
 
