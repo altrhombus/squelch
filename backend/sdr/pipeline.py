@@ -12,7 +12,6 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import numpy as np
-from scipy.signal import hilbert
 
 from .fm import FmStereoDemodulator
 from .am import AmDemodulator, NfmDemodulator
@@ -169,9 +168,7 @@ class RadioPipeline:
             if self._band == "fm":
                 l, r, composite = self._demod.process(iq)
                 if self._rds is not None:
-                    # Generate pilot analytic for RDS carrier reference
-                    pilot_a = hilbert(composite).astype(np.complex64)
-                    self._rds.feed(composite, pilot_a)
+                    self._rds.feed(composite)
                 return encoder.encode(l, r)
 
             elif self._band in ("am", "scanner"):

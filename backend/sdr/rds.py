@@ -97,6 +97,12 @@ class RdsDecoder:
     def __init__(self, callback: Callable[[dict], None]):
         self._cb = callback
 
+        # 19 kHz pilot extraction — must bandpass the pilot first, then cube
+        # the analytic signal to get the 57 kHz carrier.  Passing hilbert of
+        # the full composite (as was done before) gives the wrong carrier.
+        self._pilot_sos = butter(4, [17_000, 21_000], 'bandpass', fs=_DEMOD_RATE, output='sos')
+        self._pilot_zi  = _zero_zi(self._pilot_sos)
+
         # Subcarrier extraction (BPF 54-60 kHz at 240 kHz)
         self._rds_sos = butter(6, [54_000, 60_000], 'bandpass', fs=_DEMOD_RATE, output='sos')
         self._rds_zi  = _zero_zi(self._rds_sos)
@@ -126,26 +132,30 @@ class RdsDecoder:
 
     # ------------------------------------------------------------------
 
-    def feed(self, composite: np.ndarray, pilot_analytic: np.ndarray):
+    def feed(self, composite: np.ndarray):
         """
-        Feed one DSP block of FM composite (float32, 240 kHz) and the
-        corresponding pilot analytic signal (complex64, 240 kHz).
+        Feed one DSP block of FM composite (float32, 240 kHz).
+        Pilot is extracted internally so the caller doesn't need to manage it.
         """
-        # 1. BPF around 57 kHz
-        rds_band, self._rds_zi = sosfilt(self._rds_sos, composite.astype(np.float64), zi=self._rds_zi)
+        c = composite.astype(np.float64)
 
-        # 2. Generate 57 kHz carrier: 3× pilot phase
-        carrier57 = (pilot_analytic.astype(np.complex64) ** 3)
-        mag = np.abs(carrier57) + 1e-10
-        carrier57_norm = (carrier57 / mag).real.astype(np.float64)
+        # 1. Extract 19 kHz pilot with BPF, then build the 57 kHz carrier.
+        #    The carrier must be derived from hilbert(pilot_filtered), NOT
+        #    from hilbert(composite) — the latter gives a noisy broadband
+        #    analytic signal that produces the wrong carrier when cubed.
+        pilot, self._pilot_zi = sosfilt(self._pilot_sos, c, zi=self._pilot_zi)
+        pilot_a   = hilbert(pilot).astype(np.complex64)
+        c57       = pilot_a ** 3                           # 57 kHz analytic
+        c57_norm  = (c57 / (np.abs(c57) + 1e-10)).real.astype(np.float64)
+
+        # 2. BPF around 57 kHz to isolate the RDS subcarrier
+        rds_band, self._rds_zi = sosfilt(self._rds_sos, c, zi=self._rds_zi)
 
         # 3. Mix to baseband + LPF
-        baseband = rds_band * carrier57_norm
+        baseband = rds_band * c57_norm
         baseband, self._lp_zi = sosfilt(self._lp_sos, baseband, zi=self._lp_zi)
 
-        # 4. Resample to _RDS_RATE (19 kHz)
-        n_in  = len(baseband)
-        # rational approximation: 19000/240000 = 19/240
+        # 4. Resample to 19 kHz (rational: 19/240)
         resampled = resample_poly(baseband, 19, 240).astype(np.float32)
 
         # 5. Accumulate samples and extract bits
@@ -205,7 +215,8 @@ class RdsDecoder:
                 # Manchester violation — resync: skip one sample
                 i += 1
 
-        self._diff_buf = db[i * 2 if i * 2 <= len(db) else len(db):]
+        # i is already the consumed position in db (2 per valid pair, 1 per skip)
+        self._diff_buf = db[i:]
         # Trim diff_buf to avoid unbounded growth
         if len(self._diff_buf) > 400:
             self._diff_buf = self._diff_buf[-200:]
