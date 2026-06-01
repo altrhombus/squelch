@@ -126,11 +126,30 @@ class FmStereoDemodulator:
         #
         #    blend = 0 (mono) below pilot_rms 0.02, = 1 (full stereo) above 0.08.
         pilot_rms = float(np.sqrt(np.mean(pilot ** 2)))
+        iq_rms    = float(np.sqrt(np.mean(np.abs(iq) ** 2)))
         self.last_pilot_rms    = pilot_rms
-        self.last_iq_rms       = float(np.sqrt(np.mean(np.abs(iq) ** 2)))
+        self.last_iq_rms       = iq_rms
         self.last_composite_rms = float(np.sqrt(np.mean(composite ** 2)))
-        blend = float(np.clip((pilot_rms - 0.02) / 0.06, 0.0, 1.0))
-        self.last_blend        = blend
+
+        # Stereo blend gated by BOTH pilot presence AND raw signal strength.
+        #
+        # The FM discriminator normalises by deviation, so pilot_rms is roughly
+        # the same (~0.07) on a strong or weak signal — it only tells us the
+        # station *broadcasts* stereo, not whether the signal is clean enough
+        # to demodulate L-R without adding noise.
+        #
+        # iq_rms reflects the actual received signal power at the ADC.  Gating
+        # on it prevents 100% stereo blend on weak signals where the L-R
+        # subcarrier SNR is poor, which was the source of the 91.7 hiss.
+        #
+        # Empirical thresholds from three-station test:
+        #   91.7  IQ 0.062 → iq_gate≈0.08  → blend≈ 8% (near-mono, quiet)
+        #   88.9  IQ 0.088 → iq_gate≈0.25  → blend≈18%
+        #   102.9 IQ 0.282 → iq_gate≈1.0   → blend≈77% (full stereo)
+        pilot_gate = float(np.clip((pilot_rms - 0.02) / 0.06, 0.0, 1.0))
+        iq_gate    = float(np.clip((iq_rms    - 0.05) / 0.15, 0.0, 1.0))
+        blend      = pilot_gate * iq_gate
+        self.last_blend = blend
 
         l = (lpr + lmr * blend).astype(np.float32)
         r = (lpr - lmr * blend).astype(np.float32)
