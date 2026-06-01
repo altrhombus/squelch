@@ -147,6 +147,24 @@ function setBandIfChanged(band) {
 // HLS player
 // ---------------------------------------------------------------------------
 
+function autoplay() {
+  // Muted autoplay is universally allowed. Start muted, unmute immediately in
+  // .then() — the transition is in the same microtask so it's inaudible.
+  player.muted = true;
+  player.play()
+    .then(() => {
+      player.muted = false;
+      setPlayState(true);
+    })
+    .catch(err => {
+      player.muted = false;
+      if (err && err.name === "NotAllowedError") {
+        elTrackInfo.textContent = "Tap ▶ to start";
+        elTrackInfo.classList.add("muted");
+      }
+    });
+}
+
 function attachPlayer() {
   const src = "/hls/stream.m3u8";
 
@@ -161,14 +179,7 @@ function attachPlayer() {
 
   if (nativeHLS) {
     player.src = src;
-    player.play()
-      .then(() => setPlayState(true))
-      .catch(err => {
-        if (err && err.name === "NotAllowedError") {
-          elTrackInfo.textContent = "Tap ▶ to start";
-          elTrackInfo.classList.add("muted");
-        }
-      });
+    autoplay();
   } else if (Hls.isSupported()) {
     hlsInstance = new Hls({
       lowLatencyMode: false,
@@ -182,17 +193,7 @@ function attachPlayer() {
     hlsInstance.attachMedia(player);
     // Wait for manifest before playing — calling play() before MANIFEST_PARSED
     // results in silent failure because there's no media to play yet.
-    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-      player.play()
-        .then(() => setPlayState(true))
-        .catch(err => {
-          // Autoplay blocked by browser policy — show hint so user knows to click play
-          if (err && err.name === "NotAllowedError") {
-            elTrackInfo.textContent = "Tap ▶ to start";
-            elTrackInfo.classList.add("muted");
-          }
-        });
-    });
+    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => autoplay());
     hlsInstance.on(Hls.Events.ERROR, (_, data) => {
       if (data.fatal) console.warn("HLS fatal error:", data.type, data.details);
     });

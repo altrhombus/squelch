@@ -38,7 +38,7 @@ class RadioManager:
 
         hls_cfg = config.get("hls", {})
         self._segment_dir = hls_cfg.get("segment_dir", "/tmp/sdr-hls")
-        self._segment_dur = hls_cfg.get("segment_duration", 3)
+        self._segment_dur = hls_cfg.get("segment_duration", 2)
         self._playlist_size = hls_cfg.get("playlist_size", 10)
 
         self._gnu_radio: Optional[object] = None
@@ -323,7 +323,7 @@ class RadioManager:
         hls_announced = False
         try:
             while True:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.25)
 
                 if not hls_announced and os.path.exists(m3u8_path):
                     hls_announced = True
