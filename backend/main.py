@@ -177,6 +177,13 @@ async def status():
     return {**meta.to_dict(), **radio.status()}
 
 
+@app.post("/squelch")
+async def set_squelch(body: dict):
+    slider = int(body.get("slider", 0))
+    radio.set_squelch(max(0, min(100, slider)))
+    return {"slider": slider}
+
+
 @app.get("/stream/url")
 async def stream_url():
     return {"stream_url": "/stream", "content_type": "audio/aac"}

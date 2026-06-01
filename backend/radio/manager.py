@@ -85,6 +85,13 @@ class RadioManager:
         else:
             await self.tune(freq_hz, self._current_band)
 
+    def set_squelch(self, slider: int):
+        """Map UI slider (0-100) to an IQ RMS threshold. 0 = disabled."""
+        threshold = slider * 0.002 if slider > 0 else 0.0
+        if self._pipeline:
+            self._pipeline._squelch_iq = threshold
+        logger.info("Squelch threshold: %.3f (slider=%d)", threshold, slider)
+
     async def stop(self):
         await self._stop_all()
         if self._signal_task:

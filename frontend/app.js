@@ -507,7 +507,11 @@ selStereo.addEventListener("change", () => {
 selGain.addEventListener("change", () => {
   if (currentFreq) api("POST", "/tune", { frequency: currentFreq, band: currentBand, gain: selGain.value, stereo_mode: selStereo.value });
 });
-inputSquelch.addEventListener("input", () => { squelchVal.textContent = inputSquelch.value; });
+inputSquelch.addEventListener("input", () => {
+  const v = parseInt(inputSquelch.value, 10);
+  squelchVal.textContent = v;
+  api("POST", "/squelch", { slider: v });
+});
 
 // ---------------------------------------------------------------------------
 // Init

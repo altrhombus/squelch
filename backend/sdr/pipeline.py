@@ -53,6 +53,7 @@ class RadioPipeline:
         self._demod = None
         self._rds:  Optional[RdsDecoder] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._squelch_iq: float = 0.0   # 0 = disabled; mute audio when iq_rms < threshold
 
     # ------------------------------------------------------------------
     # Public API
@@ -174,10 +175,15 @@ class RadioPipeline:
                         self._rds.feed(composite)
                     except Exception as e:
                         logger.warning("RDS error: %s", e)
+                if self._squelch_iq > 0 and self._demod.last_iq_rms < self._squelch_iq:
+                    n = len(l)
+                    return encoder.encode(np.zeros(n, np.float32), np.zeros(n, np.float32))
                 return encoder.encode(l, r)
 
             elif self._band in ("am", "scanner"):
                 mono = self._demod.process(iq)
+                if self._squelch_iq > 0 and getattr(self._demod, "last_iq_rms", 1.0) < self._squelch_iq:
+                    return encoder.encode(np.zeros(len(mono), np.float32))
                 return encoder.encode(mono)
 
         except Exception as e:
