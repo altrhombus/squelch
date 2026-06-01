@@ -176,7 +176,7 @@ class RadioPipeline:
                 return encoder.encode(mono)
 
         except Exception as e:
-            logger.debug("DSP error: %s", e)
+            logger.warning("DSP error: %s", e)
         return None
 
     @property

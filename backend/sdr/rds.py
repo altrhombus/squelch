@@ -19,7 +19,7 @@ invoked with a dict when any field changes.
 """
 
 import numpy as np
-from scipy.signal import butter, sosfilt, sosfilt_zi, resample_poly
+from scipy.signal import butter, sosfilt, sosfilt_zi, resample_poly, hilbert
 from typing import Callable, Optional
 
 
