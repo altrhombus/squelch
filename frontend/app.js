@@ -190,10 +190,11 @@ function applyMeta(m) {
     elStationName.textContent = m.station_name;
     document.title = m.station_name + " — Squelch";
   } else if (m.frequency && m.band && m.state !== "idle") {
+    // metadata.frequency is always in Hz
     const unit  = m.band === "am" ? "kHz" : "MHz";
     const freq  = m.band === "am"
-      ? Math.round(m.frequency)
-      : parseFloat(m.frequency).toFixed(1);
+      ? Math.round(m.frequency / 1e3)
+      : parseFloat(m.frequency / 1e6).toFixed(1);
     elStationName.textContent = `${freq} ${unit}`;
     document.title = `${freq} ${unit} — Squelch`;
   } else {

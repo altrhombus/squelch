@@ -129,6 +129,9 @@ class RdsDecoder:
         self._rt_chars: dict[int, list[str]] = {}       # segment → chars (2A: 4, 2B: 2)
         self._rt_flag: Optional[int]  = None
         self._pty: int                 = 0
+        # PTY debounce: require the same value twice before reporting
+        self._pty_candidate: int       = 0
+        self._pty_seen: int            = 0
 
     # ------------------------------------------------------------------
 
@@ -276,8 +279,19 @@ class RdsDecoder:
         a, b, c, d = blocks
         group_type = (b >> 12) & 0xF
         b0         = (b >> 11) & 1
-        self._pty  = (b >> 5) & 0x1F
+        pty_raw    = (b >> 5) & 0x1F
         self._pi   = a
+
+        # PTY debounce: the same value must appear in two consecutive groups
+        # before we accept it.  A single CRC false-positive can produce any
+        # PTY code, so without this the badge cycles through random values.
+        if pty_raw == self._pty_candidate:
+            self._pty_seen += 1
+        else:
+            self._pty_candidate = pty_raw
+            self._pty_seen = 1
+        if self._pty_seen >= 2:
+            self._pty = pty_raw
 
         update: dict = {}
 

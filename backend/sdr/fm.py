@@ -17,7 +17,7 @@ Filter state is maintained between blocks for seamless streaming.
 """
 
 import numpy as np
-from scipy.signal import butter, sosfilt, sosfilt_zi, lfilter, resample_poly, hilbert
+from scipy.signal import butter, firwin, sosfilt, sosfilt_zi, lfilter, resample_poly, hilbert
 
 _SAMPLE_RATE = 2_400_000
 _DEMOD_RATE  = 240_000
@@ -44,7 +44,16 @@ class FmStereoDemodulator:
     last_pilot_rms: float = 0.0
 
     def __init__(self, deemphasis_us: int = 75):
-        # --- filter coefficients (computed once) ---
+        # --- IQ decimation FIR (replaces stateless resample_poly) ---
+        # 65-tap lowpass, cutoff at 1/(2×decim) = 0.1 of Nyquist (120 kHz).
+        # State is carried across blocks → no startup transient = no clicks.
+        _TAPS = 65
+        self._decim_h  = firwin(_TAPS, 1.0 / _CHAN_DECIM).astype(np.float64)
+        _zi_len        = _TAPS - 1
+        self._decim_zi_r = np.zeros(_zi_len)
+        self._decim_zi_i = np.zeros(_zi_len)
+
+        # --- audio bandpass/lowpass filter coefficients (SOS) ---
         # 6th-order LPF at 14.5 kHz gives ~20 dB attenuation at 19 kHz
         # (vs ~9 dB for 4th-order at 15 kHz), eliminating pilot bleed.
         self._lpr_sos     = butter(6, 14_500,              'lowpass',  fs=_DEMOD_RATE, output='sos')
@@ -72,8 +81,14 @@ class FmStereoDemodulator:
         Process one IQ block.
         Returns (left_48k, right_48k, composite_240k) as float32.
         """
-        # 1. Decimate complex IQ ×10 → 240 kHz (resample_poly anti-aliases correctly)
-        demod_iq = resample_poly(iq, 1, _CHAN_DECIM).astype(np.complex64)
+        # 1. Decimate complex IQ ×10 → 240 kHz using a stateful FIR filter.
+        #    resample_poly restarts from zero each block, causing a transient
+        #    click every ~55 ms that sounds like digital static.  Carrying the
+        #    FIR delay line across blocks eliminates these artifacts.
+        iq64 = iq.astype(np.complex128)
+        filt_r, self._decim_zi_r = lfilter(self._decim_h, [1.0], iq64.real, zi=self._decim_zi_r)
+        filt_i, self._decim_zi_i = lfilter(self._decim_h, [1.0], iq64.imag, zi=self._decim_zi_i)
+        demod_iq = (filt_r[::_CHAN_DECIM] + 1j * filt_i[::_CHAN_DECIM]).astype(np.complex64)
 
         # 2. FM phase discriminator → composite baseband
         z = demod_iq[1:] * np.conj(demod_iq[:-1])
