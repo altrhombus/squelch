@@ -11,70 +11,82 @@
 <body>
   <div id="app">
 
-    <!-- Now Playing -->
+    <!-- Now Playing hero (player controls live here) -->
     <header id="now-playing">
-      <div id="art-wrap">
-        <img id="art" src="/static/placeholder.svg" alt="Cover art" />
-        <div id="hd-badge" class="badge hidden">HD</div>
-      </div>
-      <div id="now-info">
-        <div id="pty-badge" class="badge hidden"></div>
-        <p id="station-name">Squelch</p>
-        <p id="track-info" class="muted">Ready to tune</p>
-        <div id="signal-meter">
-          <span class="bar" data-n="1"></span>
-          <span class="bar" data-n="2"></span>
-          <span class="bar" data-n="3"></span>
-          <span class="bar" data-n="4"></span>
-          <span class="bar" data-n="5"></span>
-          <span id="stereo-indicator" class="hidden">STEREO</span>
-        </div>
-      </div>
-    </header>
+      <div id="art-blur-bg"></div>
+      <div id="ws-status" class="hidden" title="Reconnecting…"></div>
+      <div id="now-playing-content">
 
-    <!-- Player -->
-    <section id="player-section">
-      <audio id="player" preload="none" playsinline></audio>
-      <div id="player-controls">
-        <button id="btn-play" class="btn-icon" title="Play / Pause">
-          <svg id="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-          <svg id="icon-pause" viewBox="0 0 24 24" fill="currentColor" class="hidden"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-        </button>
-        <div id="volume-wrap">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="18"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
-          <input id="volume" type="range" min="0" max="1" step="0.02" value="1" />
+        <div id="art-wrap">
+          <img id="art-back" src="/static/placeholder.svg" alt="" aria-hidden="true" />
+          <img id="art" src="/static/placeholder.svg" alt="Cover art" />
+          <div id="hd-badge" class="badge hidden">HD</div>
         </div>
-        <button id="btn-record" class="btn-icon" title="Record">
-          <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg>
-        </button>
-      </div>
-    </section>
+
+        <div id="now-info">
+          <div id="meta-badges">
+            <div id="pty-badge" class="badge hidden"></div>
+            <span id="stereo-indicator" class="hidden">STEREO</span>
+          </div>
+          <p id="station-name" aria-live="polite">Squelch</p>
+          <p id="station-slogan" class="muted hidden"></p>
+          <p id="track-info" class="muted" aria-live="polite">Ready to tune</p>
+          <div id="signal-meter" role="img" aria-label="Signal: no signal">
+            <span class="bar" data-n="1"></span>
+            <span class="bar" data-n="2"></span>
+            <span class="bar" data-n="3"></span>
+            <span class="bar" data-n="4"></span>
+            <span class="bar" data-n="5"></span>
+          </div>
+        </div>
+
+        <audio id="player" preload="none" playsinline></audio>
+        <div id="player-controls">
+          <button id="btn-play" class="btn-icon" aria-label="Play" aria-pressed="false">
+            <svg id="icon-play" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            <svg id="icon-pause" viewBox="0 0 24 24" fill="currentColor" class="hidden" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          </button>
+          <div id="volume-wrap">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="18" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+            <input id="volume" type="range" min="0" max="1" step="0.02" value="1" aria-label="Volume" />
+          </div>
+          <button id="btn-record" class="btn-icon" aria-label="Start recording" aria-pressed="false">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg>
+          </button>
+        </div>
+
+      </div><!-- #now-playing-content -->
+    </header>
 
     <!-- Tuner -->
     <section id="tuner-section">
-      <div id="band-tabs">
-        <button class="band-tab active" data-band="fm">FM</button>
-        <button class="band-tab" data-band="hd">HD</button>
-        <button class="band-tab" data-band="am">AM</button>
-        <button class="band-tab" data-band="scanner">SCAN</button>
+      <div id="band-tabs" role="tablist" aria-label="Frequency band">
+        <button class="band-tab active" data-band="fm" role="tab" aria-selected="true">FM</button>
+        <button class="band-tab" data-band="hd" role="tab" aria-selected="false">HD</button>
+        <button class="band-tab" data-band="am" role="tab" aria-selected="false">AM</button>
+        <button class="band-tab" data-band="scanner" role="tab" aria-selected="false">SCAN</button>
       </div>
 
-      <div id="freq-display">
-        <span id="freq-value">—</span>
-        <span id="freq-unit">MHz</span>
+      <div id="freq-row">
+        <button id="btn-step-down" class="btn-icon btn-step" aria-label="Step frequency down">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+        </button>
+        <div id="freq-display" aria-live="assertive" aria-atomic="true">
+          <span id="freq-value">—</span>
+          <span id="freq-unit">MHz</span>
+        </div>
+        <button id="btn-step-up" class="btn-icon btn-step" aria-label="Step frequency up">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+        </button>
       </div>
 
       <div id="dial-wrap">
-        <input
-          id="dial"
-          type="range"
-          min="87.5" max="108.0" step="0.1"
-          value="87.5"
-        />
-        <div id="dial-ticks"></div>
+        <input id="dial" type="range" min="87.5" max="108.0" step="0.1" value="87.5" aria-label="Frequency dial" />
+        <div id="dial-ticks" aria-hidden="true"></div>
       </div>
 
       <div id="freq-input-wrap">
+        <label for="freq-input" class="sr-only">Enter frequency</label>
         <input id="freq-input" type="number" step="0.1" placeholder="Frequency" />
         <button id="btn-go">Go</button>
       </div>
@@ -95,7 +107,13 @@
       <div id="recordings-list"></div>
     </section>
 
-    <!-- Quality drawer (collapsed by default) -->
+    <!-- History -->
+    <section id="history-section">
+      <h2>History</h2>
+      <div id="history-list"></div>
+    </section>
+
+    <!-- Signal & Quality drawer (collapsed by default) -->
     <details id="quality-drawer">
       <summary>Signal &amp; Quality</summary>
       <div class="drawer-body">
@@ -110,24 +128,24 @@
         <label>
           Bandwidth
           <select id="sel-bandwidth">
-            <option value="wide" selected>Wide (200 kHz)</option>
-            <option value="narrow">Narrow (130 kHz)</option>
+            <option value="wide" selected>High Quality (200 kHz)</option>
+            <option value="narrow">Better Reception (130 kHz)</option>
           </select>
         </label>
         <label>
           SDR gain
           <select id="sel-gain">
-            <option value="auto" selected>Auto (AGC)</option>
-            <option value="10">10 dB</option>
-            <option value="20">20 dB</option>
-            <option value="30">30 dB</option>
-            <option value="40">40 dB</option>
-            <option value="50">50 dB</option>
+            <option value="auto" selected>Automatic</option>
+            <option value="10">10 dB (manual)</option>
+            <option value="20">20 dB (manual)</option>
+            <option value="30">30 dB (manual)</option>
+            <option value="40">40 dB (manual)</option>
+            <option value="50">50 dB (manual)</option>
           </select>
         </label>
         <label>
           Squelch threshold
-          <input id="input-squelch" type="range" min="0" max="100" value="0" />
+          <input id="input-squelch" type="range" min="0" max="100" value="0" aria-label="Squelch threshold" />
           <span id="squelch-val">0</span>
         </label>
       </div>
@@ -179,9 +197,10 @@
   </div><!-- #app -->
 
   <!-- Save preset modal -->
-  <div id="modal-preset" class="modal hidden">
+  <div id="modal-preset" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-preset-title">
     <div class="modal-box">
-      <h3>Save preset</h3>
+      <h3 id="modal-preset-title">Save preset</h3>
+      <label for="preset-name-input" class="sr-only">Station name</label>
       <input id="preset-name-input" type="text" placeholder="Station name" />
       <div class="modal-actions">
         <button id="btn-preset-cancel" class="btn-small">Cancel</button>

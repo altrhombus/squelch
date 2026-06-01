@@ -39,49 +39,114 @@ html, body {
 }
 
 /* =====================================================
-   Now Playing
+   Now Playing — hero card
    ===================================================== */
 
 #now-playing {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  background: var(--surface);
+  position: relative;
+  overflow: hidden;
   border-radius: var(--radius);
-  padding: 14px;
+  background: var(--surface);
 }
 
+/* Blurred art background layer */
+#art-blur-bg {
+  position: absolute;
+  inset: -24px; /* overscan prevents blur edge artifacts */
+  background-size: cover;
+  background-position: center;
+  filter: blur(34px) brightness(0.32) saturate(1.7);
+  z-index: 0;
+  transition: background-image 0.1s;
+}
+
+/* WebSocket reconnect badge — top-right corner, visible only when disconnected */
+#ws-status {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff9500;
+  z-index: 3;
+  box-shadow: 0 0 0 2px rgba(255, 149, 0, 0.3);
+}
+
+/* All content above the blur layer */
+#now-playing-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 20px 16px 16px;
+  gap: 14px;
+}
+
+/* Art container — centered, square */
 #art-wrap {
   position: relative;
+  width: min(200px, 58%);
+  aspect-ratio: 1;
+  align-self: center;
   flex-shrink: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
 }
 
+/* Crossfade: two stacked image layers */
+#art-back,
 #art {
-  width: 72px;
-  height: 72px;
-  border-radius: 8px;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
   background: var(--surface2);
+}
+#art-back { z-index: 0; }
+#art {
+  z-index: 1;
+  transition: opacity 0.6s ease-in-out;
 }
 
 #hd-badge {
   position: absolute;
-  bottom: 2px;
-  right: 2px;
+  bottom: 6px;
+  right: 6px;
   background: #007aff;
   color: #fff;
   font-size: 10px;
   font-weight: 700;
-  padding: 1px 4px;
+  padding: 2px 5px;
   border-radius: 4px;
+  z-index: 2;
 }
 
+/* HD lock pulse animation */
+@keyframes hd-lock-pulse {
+  0%   { transform: scale(1); box-shadow: 0 0 0 0 rgba(0, 122, 255, 0.5); }
+  50%  { transform: scale(1.3); box-shadow: 0 0 0 8px rgba(0, 122, 255, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
+}
+.hd-pulse { animation: hd-lock-pulse 0.55s ease-out 2; }
+
+/* Metadata text block */
 #now-info {
-  flex: 1;
-  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
+  min-width: 0;
+}
+
+#meta-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 20px;
 }
 
 #pty-badge {
@@ -91,14 +156,22 @@ html, body {
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 20px;
-  width: fit-content;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 #station-name {
-  font-size: 17px;
+  font-size: 20px;
   font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+#station-slogan {
+  font-size: 12px;
+  font-style: italic;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -118,7 +191,7 @@ html, body {
   align-items: flex-end;
   gap: 3px;
   height: 16px;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .bar {
@@ -143,24 +216,18 @@ html, body {
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   padding: 1px 5px;
   border-radius: 20px;
-  margin-left: 4px;
   align-self: center;
 }
 
 /* =====================================================
-   Player controls
+   Player controls (inside hero card)
    ===================================================== */
-
-#player-section {
-  background: var(--surface);
-  border-radius: var(--radius);
-  padding: 14px;
-}
 
 #player-controls {
   display: flex;
   align-items: center;
   gap: 12px;
+  padding-top: 2px;
 }
 
 .btn-icon {
@@ -174,8 +241,10 @@ html, body {
   justify-content: center;
   border-radius: 50%;
   transition: background 0.15s;
+  flex-shrink: 0;
 }
-.btn-icon:hover { background: var(--surface2); }
+.btn-icon:hover { background: rgba(255, 255, 255, 0.12); }
+.btn-icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .btn-icon svg { width: 32px; height: 32px; }
 
 #volume-wrap {
@@ -202,6 +271,10 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 50%;
   background: var(--text);
   cursor: pointer;
+}
+input[type="range"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 #btn-record svg { color: var(--record-off); transition: color 0.2s; }
@@ -235,14 +308,24 @@ input[type="range"]::-webkit-slider-thumb {
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
+.band-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .band-tab.active {
   background: var(--accent);
   color: #fff;
 }
 
-#freq-display {
-  text-align: center;
+/* Frequency row: step buttons flanking the display */
+#freq-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   margin-bottom: 10px;
+}
+
+#freq-display {
+  flex: 1;
+  text-align: center;
 }
 #freq-value {
   font-size: 42px;
@@ -255,6 +338,10 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--muted);
   margin-left: 4px;
 }
+
+.btn-step { opacity: 0.65; }
+.btn-step:hover { opacity: 1; }
+.btn-step svg { width: 28px; height: 28px; }
 
 #dial-wrap {
   position: relative;
@@ -302,12 +389,15 @@ input[type="range"]::-webkit-slider-thumb {
   transition: background 0.15s;
 }
 #btn-go:hover { background: #c74f00; }
+#btn-go:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* =====================================================
    Presets
    ===================================================== */
 
-#presets-section, #recordings-section {
+#presets-section,
+#recordings-section,
+#history-section {
   background: var(--surface);
   border-radius: var(--radius);
   padding: 14px;
@@ -341,16 +431,20 @@ h2 {
   transition: background 0.15s;
 }
 .btn-small:hover { background: #333; }
+.btn-small:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .btn-small.primary { background: var(--accent); color: #fff; }
 .btn-small.primary:hover { background: #c74f00; }
 
-#presets-list, #recordings-list {
+#presets-list,
+#recordings-list,
+#history-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.preset-item, .recording-item {
+.preset-item,
+.recording-item {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -385,13 +479,78 @@ h2 {
   line-height: 1;
   padding: 0 2px;
   transition: color 0.15s;
+  flex-shrink: 0;
 }
 .btn-delete:hover { color: #e03030; }
+.btn-delete:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 
 .recording-name { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recording-dur { font-size: 12px; color: var(--muted); flex-shrink: 0; }
 
+/* Inline play button for recordings */
+.btn-play-rec {
+  padding: 2px;
+  flex-shrink: 0;
+}
+.btn-play-rec svg { width: 20px; height: 20px; }
+
 .empty-hint { color: var(--muted); font-size: 13px; text-align: center; padding: 12px 0; }
+
+/* =====================================================
+   History
+   ===================================================== */
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.history-item:hover { background: #2e2e2e; }
+
+.history-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.history-station {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.history-track {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.history-time {
+  font-size: 11px;
+  color: var(--muted);
+}
+.history-freq {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
 
 /* =====================================================
    Quality drawer
@@ -415,6 +574,7 @@ h2 {
   align-items: center;
   gap: 6px;
 }
+#quality-drawer summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 #quality-drawer summary::before {
   content: "▸";
   transition: transform 0.2s;
@@ -444,6 +604,7 @@ h2 {
   padding: 4px 8px;
   font-size: 13px;
 }
+.drawer-body select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .drawer-body input[type="range"] { width: 120px; }
 
@@ -469,6 +630,7 @@ h2 {
   align-items: center;
   gap: 6px;
 }
+#diagnostics-drawer summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 #diagnostics-drawer summary::before {
   content: "▸";
   transition: transform 0.2s;
@@ -581,6 +743,23 @@ h2 {
 .hidden { display: none !important; }
 .badge { display: inline-block; }
 
+/* Visually hidden but screen-reader accessible */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* =====================================================
+   Light mode
+   ===================================================== */
+
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #f2f2f7;
@@ -593,4 +772,6 @@ h2 {
   }
   .btn-small, .band-tab { color: #111; }
   #freq-input, .drawer-body select, .modal-box input[type="text"] { color: #111; }
+  #art-blur-bg { filter: blur(34px) brightness(1.3) saturate(0.5); opacity: 0.45; }
+  .btn-icon:hover { background: rgba(0, 0, 0, 0.07); }
 }
