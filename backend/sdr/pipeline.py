@@ -19,7 +19,7 @@ from .rds import RdsDecoder
 
 logger = logging.getLogger(__name__)
 
-_FM_SR   = 2_400_000
+_FM_SR   = 1_200_000   # 2.4 MHz caused queue overflow; 1.2 MHz is sufficient for FM stereo + RDS
 _AM_SR   = 1_200_000
 _BLOCK   = 131_072      # IQ samples per SDR read (≈ 55 ms at 2.4 MHz)
 _AM_BLOCK = 65_536      # IQ samples per read at 1.2 MHz (≈ 55 ms)

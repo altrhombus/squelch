@@ -17,12 +17,17 @@ Filter state is maintained between blocks for seamless streaming.
 """
 
 import numpy as np
-from scipy.signal import butter, firwin, sosfilt, sosfilt_zi, lfilter, resample_poly, hilbert
+from scipy.signal import butter, sosfilt, sosfilt_zi, lfilter, resample_poly, hilbert
 
-_SAMPLE_RATE = 2_400_000
+# 1.2 MHz is sufficient for the FM composite (L+R to 15 kHz, L-R to 53 kHz,
+# RDS at 57 kHz — well below the 600 kHz Nyquist limit).  Using 2.4 MHz
+# doubled the samples-per-block without any audio benefit, and caused the
+# pyrtlsdr read queue to overflow ("extra callback data lost") at ~5 Hz,
+# which was the source of the digital cutting/static artefacts.
+_SAMPLE_RATE = 1_200_000
 _DEMOD_RATE  = 240_000
 _AUDIO_RATE  = 48_000
-_CHAN_DECIM  = _SAMPLE_RATE // _DEMOD_RATE   # 10
+_CHAN_DECIM  = _SAMPLE_RATE // _DEMOD_RATE   # 5
 _AUDIO_DECIM = _DEMOD_RATE  // _AUDIO_RATE   # 5
 _MAX_DEV     = 75_000                         # FM max deviation Hz
 
@@ -44,15 +49,6 @@ class FmStereoDemodulator:
     last_pilot_rms: float = 0.0
 
     def __init__(self, deemphasis_us: int = 75):
-        # --- IQ decimation FIR (replaces stateless resample_poly) ---
-        # 65-tap lowpass, cutoff at 1/(2×decim) = 0.1 of Nyquist (120 kHz).
-        # State is carried across blocks → no startup transient = no clicks.
-        _TAPS = 65
-        self._decim_h  = firwin(_TAPS, 1.0 / _CHAN_DECIM).astype(np.float64)
-        _zi_len        = _TAPS - 1
-        self._decim_zi_r = np.zeros(_zi_len)
-        self._decim_zi_i = np.zeros(_zi_len)
-
         # --- audio bandpass/lowpass filter coefficients (SOS) ---
         # 6th-order LPF at 14.5 kHz gives ~20 dB attenuation at 19 kHz
         # (vs ~9 dB for 4th-order at 15 kHz), eliminating pilot bleed.
@@ -81,14 +77,12 @@ class FmStereoDemodulator:
         Process one IQ block.
         Returns (left_48k, right_48k, composite_240k) as float32.
         """
-        # 1. Decimate complex IQ ×10 → 240 kHz using a stateful FIR filter.
-        #    resample_poly restarts from zero each block, causing a transient
-        #    click every ~55 ms that sounds like digital static.  Carrying the
-        #    FIR delay line across blocks eliminates these artifacts.
-        iq64 = iq.astype(np.complex128)
-        filt_r, self._decim_zi_r = lfilter(self._decim_h, [1.0], iq64.real, zi=self._decim_zi_r)
-        filt_i, self._decim_zi_i = lfilter(self._decim_h, [1.0], iq64.imag, zi=self._decim_zi_i)
-        demod_iq = (filt_r[::_CHAN_DECIM] + 1j * filt_i[::_CHAN_DECIM]).astype(np.complex64)
+        # 1. Decimate ×5 (1.2 MHz → 240 kHz).  resample_poly uses SIMD-optimised
+        #    upfirdn internally and is significantly faster than lfilter for
+        #    large arrays.  The minor block-edge transient it introduces is
+        #    inaudible compared to the queue-overflow dropouts that the slower
+        #    lfilter approach was causing.
+        demod_iq = resample_poly(iq, 1, _CHAN_DECIM).astype(np.complex64)
 
         # 2. FM phase discriminator → composite baseband
         z = demod_iq[1:] * np.conj(demod_iq[:-1])
