@@ -96,6 +96,15 @@ class _SpectralSubtractor:
         self._noise_psd   = np.zeros(n_fft // 2 + 1, dtype=np.float64)
         self._noise_ready = False
 
+        # Frequency-dependent subtraction mask: full below 2 kHz, linear taper
+        # to zero at 4 kHz, nothing above.  FM hiss and sibilants ('s', 'sh',
+        # 'f') both occupy 4-8 kHz; subtracting there shreds the sibilant's
+        # spectral envelope and produces a "staticy" crackling on speech.
+        # Lower-midrange hiss (0-3 kHz) is reduced without touching fricatives.
+        _freqs            = np.arange(n_fft // 2 + 1) * (48_000.0 / n_fft)
+        self._sub_mask    = np.clip((4_000.0 - _freqs) / 2_000.0,
+                                    0.0, 1.0).astype(np.float64)
+
         self._in_q  = np.empty(0, dtype=np.float32)
         self._out_q = np.empty(0, dtype=np.float32)
         self._ola   = np.zeros(n_fft,    dtype=np.float64)
@@ -119,8 +128,9 @@ class _SpectralSubtractor:
                 X_out = X                     # pass through while estimating
             elif self._noise_ready:
                 floor_p = (self._floor_frac ** 2) * power
-                clean_p = np.maximum(power - self._over_sub * self._noise_psd,
-                                     floor_p)
+                clean_p = np.maximum(
+                    power - self._over_sub * self._noise_psd * self._sub_mask,
+                    floor_p)
                 X_out   = X * np.sqrt(clean_p / (power + 1e-30))
             else:
                 X_out = X                     # no estimate yet, pass through
