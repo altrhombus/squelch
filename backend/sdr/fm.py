@@ -39,6 +39,19 @@ def _zero_zi(sos: np.ndarray) -> np.ndarray:
 _LIMITER_KNEE     = 0.85    # soft-knee starts here; converges to ±1.0 above
 _SHELF_MAX_DEPTH  = 0.292   # (1 − 10^(−3/20)): blend fraction → -3 dB HF at noise_gate=0
 
+# ITU-R BS.1770-4 K-weighting filter — two cascaded biquads, pre-computed for 48 kHz.
+# Stage 1: head-acoustics pre-filter (high-shelf boost above ~1 kHz).
+# Stage 2: RLB weighting (second-order highpass, de-weights LF where ears are less sensitive).
+# Applying this to the audio signal before computing RMS gives a perceptual loudness
+# estimate (LUFS-style) rather than flat-spectrum energy, so the AGC target is
+# consistent across station formats regardless of spectral balance.
+_K_WEIGHT_SOS = np.array([
+    [1.53512485958697, -2.69169618940638, 1.19839281085285,
+     1.0,              -1.69065929318241,  0.73248077421585],   # stage 1
+    [1.0,              -2.0,               1.0,
+     1.0,              -1.99004745483398,  0.99007225036498],   # stage 2
+], dtype=np.float64)
+
 def _soft_limit(x: np.ndarray) -> np.ndarray:
     """
     Soft-knee limiter: linear below the knee, tanh rolloff above.
@@ -238,6 +251,10 @@ class FmStereoDemodulator:
         self._ss_l = _SpectralSubtractor()
         self._ss_r = _SpectralSubtractor()
 
+        # --- K-weighting filter state (ITU-R BS.1770, per channel) ---
+        self._kw_l_zi = _zero_zi(_K_WEIGHT_SOS)
+        self._kw_r_zi = _zero_zi(_K_WEIGHT_SOS)
+
     def process(self, iq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Process one IQ block.
@@ -399,15 +416,23 @@ class FmStereoDemodulator:
         l32       = self._ss_l.process(l32, in_noise)
         r32       = self._ss_r.process(r32, in_noise)
 
-        # 10c. Asymmetric audio AGC + soft-knee limiter.
-        #     Fast attack (α=0.3, τ≈240 ms): quickly pull gain down when loud
-        #     content resumes after a quiet passage — prevents the 5-second
-        #     distorted surge that occurred with symmetric slow AGC.
-        #     Slow release (α=0.005, τ≈22 s): gain barely rises during a
-        #     10-second break (+1.5 dB), so the noise floor stays quiet and
-        #     there is little overshoot when the next song hits.
-        #     Gate: skip gain update during silence/hiss (rms ≤ _AGC_GATE).
-        target_gain = 0.12 / rms
+        # 10c. K-weighted loudness measurement (ITU-R BS.1770).
+        #      Filter both channels through the two-stage K-weighting SOS and
+        #      compute RMS of the result.  K-weighted RMS ≈ perceived loudness:
+        #      bright stations and bass-heavy stations that would measure the same
+        #      on a flat-RMS meter now correctly measure as equally loud.  The
+        #      gate and spectral-subtraction gate still use broadband rms (above)
+        #      since the K-weighting HF boost would make hiss appear louder and
+        #      could prevent the silence gate from firing.
+        kw_l, self._kw_l_zi = sosfilt(_K_WEIGHT_SOS, l32, zi=self._kw_l_zi)
+        kw_r, self._kw_r_zi = sosfilt(_K_WEIGHT_SOS, r32, zi=self._kw_r_zi)
+        rms_k = float(np.sqrt(np.mean(kw_l ** 2 + kw_r ** 2) / 2)) + 1e-10
+
+        # 10d. Asymmetric audio AGC + soft-knee limiter.
+        #     target_gain drives K-weighted loudness to 0.12 rather than flat RMS,
+        #     so the AGC converges on equal perceived loudness across all stations.
+        #     Time constants and gate are unchanged from before.
+        target_gain = 0.12 / rms_k
         if rms > _AGC_GATE:
             if self._agc_warmup > 0:
                 self._agc_warmup -= 1
