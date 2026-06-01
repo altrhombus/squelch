@@ -280,6 +280,14 @@ function applyDiag(d, band) {
     v => v > 0.06 ? "good" : v > 0.02 ? "fair" : "weak",
     v => v.toFixed(4));
 
+  // Noise floor: 65-90 kHz band — lower is cleaner.
+  // Scale 0-0.1: good < 0.02, fair < 0.05, weak (noisy) above.
+  const noiseRow = document.getElementById("diag-noise-row");
+  if (noiseRow) noiseRow.style.display = (band === "fm" || !band) ? "" : "none";
+  setDiagMeter("noise", d.noise_rms ?? 0, 0.10,
+    v => v < 0.02 ? "good" : v < 0.05 ? "fair" : "weak",
+    v => v.toFixed(4));
+
   // Stereo blend: 0-1 (direct percentage)
   const blendRow = document.getElementById("diag-blend-row");
   if (blendRow) blendRow.style.display = (band === "fm" || !band) ? "" : "none";
