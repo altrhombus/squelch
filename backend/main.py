@@ -27,10 +27,14 @@ from .stations import (
 )
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
+# Suppress noisy third-party debug output
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+logging.getLogger("rtlsdr").setLevel(logging.INFO)
+logging.getLogger("av").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

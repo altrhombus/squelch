@@ -118,14 +118,10 @@ class FmStereoDemodulator:
         #    Typical pilot RMS on a good FM signal ≈ 0.07 (pilot is 10% of
         #    total deviation; RMS of sine = A/√2).
         #
-        #    Linear blend at 67% still adds 67% of a noisy L-R signal.
-        #    Squaring keeps the blend near zero until the pilot is strong,
-        #    then rises quickly — aggressive noise suppression on weak/medium
-        #    signals while still achieving full stereo on strong ones.
-        #    blend = 0 below pilot_rms 0.03, = 1 above 0.09.
+        #    blend = 0 (mono) below pilot_rms 0.02, = 1 (full stereo) above 0.08.
         pilot_rms = float(np.sqrt(np.mean(pilot ** 2)))
         self.last_pilot_rms = pilot_rms
-        blend = float(np.clip((pilot_rms - 0.03) / 0.06, 0.0, 1.0)) ** 2
+        blend = float(np.clip((pilot_rms - 0.02) / 0.06, 0.0, 1.0))
 
         l = (lpr + lmr * blend).astype(np.float32)
         r = (lpr - lmr * blend).astype(np.float32)
