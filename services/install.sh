@@ -11,13 +11,12 @@ echo "==> Installing system dependencies"
 sudo apt-get update -qq
 sudo apt-get install -y \
   rtl-sdr \
-  gnuradio \
-  gr-osmosdr \
-  gr-rds \
-  ffmpeg \
+  librtlsdr-dev \
   python3 \
   python3-pip \
-  python3-venv
+  python3-venv \
+  python3-numpy \
+  python3-scipy
 
 # nrsc5 (HD Radio) — not in Raspbian apt; build from source
 if command -v nrsc5 &>/dev/null; then
@@ -52,8 +51,8 @@ fi
 
 echo "==> Creating Python virtual environment"
 cd "$REPO_DIR"
-# --system-site-packages is required so the venv can see apt-installed packages
-# like gnuradio, gr-osmosdr, and gr-rds which cannot be installed via pip
+# --system-site-packages lets the venv use apt-installed numpy/scipy,
+# which are optimised for the Pi (NEON SIMD via OpenBLAS).
 python3 -m venv --system-site-packages .venv
 .venv/bin/pip install --quiet --upgrade pip
 .venv/bin/pip install --quiet -r requirements.txt

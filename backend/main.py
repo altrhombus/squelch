@@ -6,8 +6,8 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import yaml
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -15,12 +15,12 @@ from .db import init_db
 from .metadata import state as meta
 from .radio.manager import RadioManager
 from .recorder import Recorder
+from .streaming import StreamingManager
 from .stations import (
     PresetCreate,
     PresetUpdate,
     create_preset,
     delete_preset,
-    get_preset,
     list_presets,
     seed_default_presets,
     update_preset,
@@ -33,8 +33,9 @@ logger = logging.getLogger(__name__)
 # Config
 # ---------------------------------------------------------------------------
 
-_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
+_CONFIG_PATH  = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
 _EXAMPLE_PATH = _CONFIG_PATH + ".example"
+_ART_DIR      = "/tmp/sdr-art"
 
 
 def _load_config() -> dict:
@@ -45,32 +46,30 @@ def _load_config() -> dict:
 
 config = _load_config()
 
-_HLS_DIR = config.get("hls", {}).get("segment_dir", "/tmp/sdr-hls")
-_ART_DIR = "/tmp/sdr-art"
-
 # ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
 
-radio: Optional[RadioManager] = None
-recorder: Optional[Recorder] = None
+radio:    Optional[RadioManager]    = None
+recorder: Optional[Recorder]       = None
+streams:  Optional[StreamingManager] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global radio, recorder
+    global radio, recorder, streams
     await init_db()
 
-    os.makedirs(_HLS_DIR, exist_ok=True)
     os.makedirs(_ART_DIR, exist_ok=True)
 
-    radio = RadioManager(config, meta)
+    streams  = StreamingManager()
+    radio    = RadioManager(config, meta, streams)
     recorder = Recorder(config, meta)
+    recorder.set_streaming(streams)
 
     await radio.startup()
     await recorder.startup()
 
-    # Seed default presets from config if DB is empty
     defaults = config.get("default_presets", [])
     if defaults:
         await seed_default_presets(defaults)
@@ -84,14 +83,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Squelch", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
-# Static files — directories must exist before StaticFiles validates them
+# Static files
 # ---------------------------------------------------------------------------
 
-os.makedirs(_HLS_DIR, exist_ok=True)
 os.makedirs(_ART_DIR, exist_ok=True)
-
-app.mount("/hls", StaticFiles(directory=_HLS_DIR), name="hls")
-app.mount("/art", StaticFiles(directory=_ART_DIR), name="art")
+app.mount("/art",    StaticFiles(directory=_ART_DIR), name="art")
 
 _FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/static", StaticFiles(directory=_FRONTEND_DIR), name="static")
@@ -103,16 +99,53 @@ async def root():
 
 
 # ---------------------------------------------------------------------------
+# Audio stream  (replaces HLS)
+# ---------------------------------------------------------------------------
+
+@app.get("/stream")
+async def audio_stream(request: Request):
+    """
+    Chunked HTTP AAC-LC/ADTS stream.
+    Content-Type: audio/aac — natively decoded on iOS/macOS, Chrome 89+, AirPlay.
+    Each connected client gets its own asyncio.Queue; slow clients drop frames.
+    """
+    q = streams.new_client()
+
+    async def generate():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    chunk = await asyncio.wait_for(q.get(), timeout=10.0)
+                    yield chunk
+                except asyncio.TimeoutError:
+                    # Keep the connection alive even if SDR is stopped
+                    pass
+        finally:
+            streams.remove_client(q)
+
+    return StreamingResponse(
+        generate(),
+        media_type="audio/aac",
+        headers={
+            "Cache-Control":        "no-cache, no-store",
+            "X-Accel-Buffering":    "no",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Tune
 # ---------------------------------------------------------------------------
 
-
 class TuneRequest(BaseModel):
-    frequency: float          # MHz for FM/HD/scanner, kHz for AM
-    band: str                 # fm | am | scanner | hd
-    gain: Optional[str] = None
-    bandwidth: Optional[str] = None   # wide | narrow
-    stereo_mode: Optional[str] = None  # auto | stereo | mono
+    frequency:   float
+    band:        str
+    gain:        Optional[str] = None
+    bandwidth:   Optional[str] = None
+    stereo_mode: Optional[str] = None
 
 
 @app.post("/tune")
@@ -121,20 +154,11 @@ async def tune(req: TuneRequest):
     if band not in ("fm", "am", "scanner", "hd"):
         raise HTTPException(400, "band must be fm, am, scanner, or hd")
 
-    # Normalize frequency to Hz
-    if band in ("fm", "hd", "scanner"):
-        freq_hz = req.frequency * 1e6
-    else:
-        # AM: user enters kHz
-        freq_hz = req.frequency * 1e3
+    freq_hz = req.frequency * 1e6 if band != "am" else req.frequency * 1e3
 
-    kwargs = {}
-    if req.gain is not None:
-        kwargs["gain"] = req.gain
-    if req.bandwidth is not None:
-        kwargs["bandwidth"] = req.bandwidth
-    if req.stereo_mode is not None:
-        kwargs["stereo_mode"] = req.stereo_mode
+    kwargs: dict = {}
+    if req.gain        is not None: kwargs["gain"]      = req.gain
+    if req.stereo_mode is not None: kwargs["stereo_mode"] = req.stereo_mode
 
     asyncio.create_task(radio.tune(freq_hz, band, **kwargs))
     return {"status": "tuning", "frequency": req.frequency, "band": band}
@@ -144,7 +168,6 @@ async def tune(req: TuneRequest):
 # Status
 # ---------------------------------------------------------------------------
 
-
 @app.get("/status")
 async def status():
     return {**meta.to_dict(), **radio.status()}
@@ -152,22 +175,19 @@ async def status():
 
 @app.get("/stream/url")
 async def stream_url():
-    return {"hls_url": f"/hls/stream.m3u8"}
+    return {"stream_url": "/stream", "content_type": "audio/aac"}
 
 
 # ---------------------------------------------------------------------------
 # WebSocket — live metadata + signal
 # ---------------------------------------------------------------------------
 
-
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     meta.register_ws(ws)
     try:
-        # Send current state immediately on connect
         await ws.send_text(json.dumps(meta.to_dict()))
-        # Keep alive — client messages are ignored, server pushes updates
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
@@ -179,7 +199,6 @@ async def websocket_endpoint(ws: WebSocket):
 # ---------------------------------------------------------------------------
 # Presets
 # ---------------------------------------------------------------------------
-
 
 @app.get("/presets")
 async def get_presets():
@@ -208,7 +227,6 @@ async def remove_preset(preset_id: int):
 # ---------------------------------------------------------------------------
 # Recordings
 # ---------------------------------------------------------------------------
-
 
 class RecordStartRequest(BaseModel):
     filename: Optional[str] = None
@@ -246,7 +264,7 @@ async def delete_rec(recording_id: int):
 @app.get("/recordings/{recording_id}/download")
 async def download_recording(recording_id: int):
     recs = await recorder.list_recordings()
-    rec = next((r for r in recs if r["id"] == recording_id), None)
+    rec  = next((r for r in recs if r["id"] == recording_id), None)
     if not rec:
         raise HTTPException(404, "Recording not found")
     output_dir = os.path.expanduser(
@@ -262,11 +280,9 @@ async def download_recording(recording_id: int):
 # History
 # ---------------------------------------------------------------------------
 
-
 @app.get("/history")
 async def get_history():
     from .db import get_db
-
     db = await get_db()
     try:
         async with db.execute(
@@ -284,11 +300,6 @@ async def get_history():
 
 if __name__ == "__main__":
     import uvicorn
-
-    srv_cfg = config.get("server", {})
-    uvicorn.run(
-        "backend.main:app",
-        host=srv_cfg.get("host", "0.0.0.0"),
-        port=srv_cfg.get("port", 8000),
-        reload=False,
-    )
+    srv = config.get("server", {})
+    uvicorn.run("backend.main:app", host=srv.get("host", "0.0.0.0"),
+                port=srv.get("port", 8000), reload=False)

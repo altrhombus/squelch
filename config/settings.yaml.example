@@ -4,13 +4,13 @@ server:
   host: "0.0.0.0"
   port: 8000
 
-hls:
-  # Temporary directory for HLS segments — wiped on startup
-  segment_dir: "/tmp/sdr-hls"
-  # Seconds per segment (lower = faster startup, higher = less I/O)
-  segment_duration: 2
-  # Number of segments to keep in the playlist window
-  playlist_size: 10
+audio:
+  # Output sample rate for all bands (Hz). 48000 decimates cleanly from 2.4 MHz.
+  output_rate: 48000
+  # AAC bitrate for stereo streams (FM / HD Radio), kbps
+  mp3_bitrate_stereo: 96
+  # AAC bitrate for mono streams (AM / scanner), kbps
+  mp3_bitrate_mono: 48
 
 sdr:
   # RTL-SDR device index (0 = first dongle)

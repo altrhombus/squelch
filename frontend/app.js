@@ -11,7 +11,6 @@ let currentBand = "fm";
 let currentFreq = 91.1;
 let isPlaying = false;
 let isRecording = false;
-let hlsInstance = null;
 let ws = null;
 let wsReconnectTimer = null;
 
@@ -111,30 +110,6 @@ function clamp(v, min, max) {
 }
 
 // ---------------------------------------------------------------------------
-// Safari audio unlock
-// ---------------------------------------------------------------------------
-
-// Safari requires play() to be called synchronously inside a user gesture.
-// Any async call (WebSocket callback, setTimeout, hls.js event) is outside
-// the gesture window and will be blocked. The fix: during the first tune()
-// call — which IS a user gesture — play a zero-sample silent WAV. This
-// permanently unlocks the <audio> element for async play() calls for the
-// rest of the page session.
-//
-// The WAV is a minimal valid RIFF/PCM file: 44-byte header, 0 audio samples.
-const _SILENT_WAV =
-  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
-let _audioUnlocked = false;
-
-function _unlockAudio() {
-  if (_audioUnlocked) return;
-  _audioUnlocked = true;
-  // Immediately overwritten by attachPlayer() when the real stream is ready.
-  player.src = _SILENT_WAV;
-  player.play().catch(() => {});
-}
-
-// ---------------------------------------------------------------------------
 // Tuning
 // ---------------------------------------------------------------------------
 
@@ -143,92 +118,45 @@ async function tune(freq, band) {
   setFreq(freq);
   setBandIfChanged(band);
 
-  // Unlock audio BEFORE the first await — this is still synchronous inside
-  // the user gesture and satisfies Safari's requirement.
-  _unlockAudio();
+  // Start/reconnect the audio stream synchronously inside the user gesture.
+  // With a persistent HTTP AAC stream there is no "stream ready" wait —
+  // the server immediately begins encoding and the browser decodes on the fly.
+  // Calling play() here (before any await) also satisfies Safari's
+  // requirement that play() be invoked from a user-gesture call stack.
+  _startStream();
 
   const res = await api("POST", "/tune", {
     frequency: freq,
     band: band,
     gain: selGain.value,
-    bandwidth: selBandwidth.value,
     stereo_mode: selStereo.value,
   });
 
-  if (!res.error) {
-    elStationName.textContent = "Tuning…";
-    elTrackInfo.textContent = "";
-    // Player will attach when the server pushes "hls_ready" via WebSocket.
-    // The fallback timeout covers the case where the WS message is missed.
-    clearTimeout(window._hlsFallbackTimer);
-    window._hlsFallbackTimer = setTimeout(() => {
-      if (!isPlaying) attachPlayer();
-    }, 12000);
+  if (res.error) {
+    elStationName.textContent = "Error";
   }
 }
 
-function setBandIfChanged(band) {
-  if (band !== currentBand) setBand(band);
-}
-
-// ---------------------------------------------------------------------------
-// HLS player
-// ---------------------------------------------------------------------------
-
-function autoplay() {
-  // Muted autoplay is universally allowed. Start muted, unmute immediately in
-  // .then() — the transition is in the same microtask so it's inaudible.
+function _startStream() {
+  // (Re)connect to the live AAC stream.  Setting src triggers a fresh HTTP
+  // request even if the value is the same — browsers reopen the connection.
+  player.src = "/stream";
   player.muted = true;
   player.play()
-    .then(() => {
-      player.muted = false;
-      setPlayState(true);
-    })
+    .then(() => { player.muted = false; setPlayState(true); })
     .catch(err => {
       player.muted = false;
-      if (err && err.name === "NotAllowedError") {
+      if (err?.name === "NotAllowedError") {
         elTrackInfo.textContent = "Tap ▶ to start";
         elTrackInfo.classList.add("muted");
       }
     });
 }
 
-function attachPlayer() {
-  const src = "/hls/stream.m3u8";
-
-  if (hlsInstance) {
-    hlsInstance.destroy();
-    hlsInstance = null;
-  }
-
-  // Detect native HLS support (Safari on macOS/iOS) via canPlayType,
-  // not via MediaSource — Safari has both MSE and native HLS.
-  const nativeHLS = player.canPlayType("application/vnd.apple.mpegurl") !== "";
-
-  if (nativeHLS) {
-    player.src = src;
-    autoplay();
-  } else if (Hls.isSupported()) {
-    hlsInstance = new Hls({
-      lowLatencyMode: false,
-      maxBufferLength: 30,
-      // Retry manifest aggressively — first segment takes ~3-5s to appear
-      manifestLoadingMaxRetry: 15,
-      manifestLoadingRetryDelay: 1000,
-      manifestLoadingMaxRetryTimeout: 8000,
-    });
-    hlsInstance.loadSource(src);
-    hlsInstance.attachMedia(player);
-    // Wait for manifest before playing — calling play() before MANIFEST_PARSED
-    // results in silent failure because there's no media to play yet.
-    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => autoplay());
-    hlsInstance.on(Hls.Events.ERROR, (_, data) => {
-      if (data.fatal) console.warn("HLS fatal error:", data.type, data.details);
-    });
-  } else {
-    console.warn("HLS not supported in this browser");
-  }
+function setBandIfChanged(band) {
+  if (band !== currentBand) setBand(band);
 }
+
 
 function setPlayState(playing) {
   isPlaying = playing;
@@ -248,18 +176,7 @@ function connectWs() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
 
   ws.onmessage = (e) => {
-    try {
-      const msg = JSON.parse(e.data);
-      if (msg.event === "hls_ready") {
-        clearTimeout(window._hlsFallbackTimer);
-        // Re-attach if not playing, OR if the player hit an error/never loaded
-        // (readyState 0 = HAVE_NOTHING — happens when a 404 was received before
-        // the stream was ready and the media element is now stuck in error state).
-        if (!isPlaying || player.readyState < 2) attachPlayer();
-        return;
-      }
-      applyMeta(msg);
-    } catch {}
+    try { applyMeta(JSON.parse(e.data)); } catch {}
   };
 
   ws.onclose = () => {
@@ -461,17 +378,11 @@ freqInput.addEventListener("keydown", e => { if (e.key === "Enter") btnGo.click(
 
 // Play/pause
 btnPlay.addEventListener("click", () => {
-  _unlockAudio();
   if (isPlaying) {
     player.pause();
     setPlayState(false);
-  } else if (player.error || player.readyState < 2) {
-    // Media element is in error or unloaded state — re-attach cleanly
-    attachPlayer();
-  } else if (!player.src && !hlsInstance) {
-    attachPlayer();
   } else {
-    player.play().then(() => setPlayState(true)).catch(() => {});
+    _startStream();
   }
 });
 
@@ -517,21 +428,14 @@ btnPresetSave.addEventListener("click", async () => {
 presetNameInput.addEventListener("keydown", e => { if (e.key === "Enter") btnPresetSave.click(); });
 modalPreset.addEventListener("click", e => { if (e.target === modalPreset) modalPreset.classList.add("hidden"); });
 
-// Quality controls — apply on change when already tuned
-selStereo.addEventListener("change",    () => api("POST", "/tune", buildTunePayload()));
-selBandwidth.addEventListener("change", () => api("POST", "/tune", buildTunePayload()));
-selGain.addEventListener("change",      () => api("POST", "/tune", buildTunePayload()));
-inputSquelch.addEventListener("input",  () => { squelchVal.textContent = inputSquelch.value; });
-
-function buildTunePayload() {
-  return {
-    frequency: currentFreq,
-    band: currentBand,
-    gain: selGain.value,
-    bandwidth: selBandwidth.value,
-    stereo_mode: selStereo.value,
-  };
-}
+// Quality controls — retune on change
+selStereo.addEventListener("change", () => {
+  if (currentFreq) api("POST", "/tune", { frequency: currentFreq, band: currentBand, gain: selGain.value, stereo_mode: selStereo.value });
+});
+selGain.addEventListener("change", () => {
+  if (currentFreq) api("POST", "/tune", { frequency: currentFreq, band: currentBand, gain: selGain.value, stereo_mode: selStereo.value });
+});
+inputSquelch.addEventListener("input", () => { squelchVal.textContent = inputSquelch.value; });
 
 // ---------------------------------------------------------------------------
 // Init
