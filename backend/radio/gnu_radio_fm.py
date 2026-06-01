@@ -187,48 +187,86 @@ class GnuRadioFM:
 
     def _connect_rds(self, tb, src):
         # Track each stream connection so we can undo partial wiring on failure.
-        # Any exception — ImportError, itemsize mismatch, API change — must not
-        # leave orphaned blocks in the main flowgraph; tb.start() will refuse to
-        # run if any connected block has an unconnected output port.
+        # Any exception must not leave orphaned blocks in the main flowgraph;
+        # tb.start() refuses to run if any block has an unconnected output port.
         stream_connections: list[tuple] = []
         try:
-            from gnuradio import gr, analog, filter as gr_filter
+            import math
+            from gnuradio import analog, digital, filter as gr_filter, blocks
             import rds
 
-            # Decimate to 250kHz for RDS processing
-            rds_decim = int(self.SAMPLE_RATE / 250_000)
+            # gr-rds 3.10 ships rds.decoder (uint8 stream) + rds.parser but NOT
+            # bpsk_demod — build the BPSK demodulation chain manually.
+            #
+            # Chain (all rates in Hz):
+            #   src (2MHz cplx)
+            #   → rds_filter  [freq_xlating_fir_filter_ccc, ×8 decim] → 250kHz cplx
+            #   → fm_demod    [quadrature_demod_cf]                   → 250kHz float (FM composite)
+            #   → rds_xlate   [freq_xlating_fir_filter_fcf, shift 57k]→ 250kHz cplx (57kHz→DC)
+            #   → rds_resamp  [pfb_arb_resampler_ccf ×0.076]          →  19kHz cplx
+            #   → rds_costas  [costas_loop_cc, order 2]                →  19kHz cplx (carrier-locked)
+            #   → rds_clk     [clock_recovery_mm_cc, ~16 SPS]          → symbol-rate cplx
+            #   → rds_c2r     [complex_to_real]                        → float
+            #   → rds_slicer  [binary_slicer_fb]                       → uint8 bits
+            #   → rds_diff    [diff_decoder_bb(2)]                     → uint8 bits (DBPSK decoded)
+            #   → rds.decoder → rds.parser → _RdsMsgBridge → callback
+
+            RDS_RATE = 19_000
+            RDS_BAUD = 1187.5
+            RDS_SPS  = RDS_RATE / RDS_BAUD  # ≈ 16 samples per symbol
+
+            rds_decim = int(self.SAMPLE_RATE / 250_000)  # 8
             rds_filter = gr_filter.freq_xlating_fir_filter_ccc(
                 rds_decim,
                 gr_filter.firdes.low_pass(1.0, self.SAMPLE_RATE, 100_000, 10_000),
                 0,
                 self.SAMPLE_RATE,
             )
-            # FM demodulate the 250kHz composite to get the baseband with 57kHz RDS subcarrier
-            fm_demod = analog.quadrature_demod_cf(250_000 / (2 * 3.14159 * 75_000))
-            # bpsk_demod handles 57kHz subcarrier extraction, clock recovery, and BPSK
-            # decoding → outputs bits (1 byte/sample), which is what rds.decoder expects
-            rds_bpsk = rds.bpsk_demod(250_000)
+            fm_demod = analog.quadrature_demod_cf(
+                250_000 / (2 * math.pi * 75_000)
+            )
+            rds_xlate = gr_filter.freq_xlating_fir_filter_fcf(
+                1,
+                gr_filter.firdes.low_pass(1.0, 250_000, 3_000, 1_500),
+                57_000,
+                250_000,
+            )
+            rds_resamp = gr_filter.pfb_arb_resampler_ccf(RDS_RATE / 250_000)
+            rds_costas = analog.costas_loop_cc(2 * math.pi / 200.0, 2)
+            rds_clk    = digital.clock_recovery_mm_cc(
+                RDS_SPS, 0.25 * 0.175 ** 2, 0.5, 0.175, 0.005
+            )
+            rds_c2r    = blocks.complex_to_real()
+            rds_slicer = digital.binary_slicer_fb()
+            rds_diff   = digital.diff_decoder_bb(2)
             rds_decoder = rds.decoder(False, False)
-            rds_parser = rds.parser(False, False, 0)
+            rds_parser  = rds.parser(False, False, 0)
 
-            # Connect one hop at a time so we can undo on failure
-            tb.connect(src, rds_filter);          stream_connections.append((src, rds_filter))
-            tb.connect(rds_filter, fm_demod);     stream_connections.append((rds_filter, fm_demod))
-            tb.connect(fm_demod, rds_bpsk);       stream_connections.append((fm_demod, rds_bpsk))
-            tb.connect(rds_bpsk, rds_decoder);    stream_connections.append((rds_bpsk, rds_decoder))
+            chain = [
+                (src,        rds_filter),
+                (rds_filter, fm_demod),
+                (fm_demod,   rds_xlate),
+                (rds_xlate,  rds_resamp),
+                (rds_resamp, rds_costas),
+                (rds_costas, rds_clk),
+                (rds_clk,    rds_c2r),
+                (rds_c2r,    rds_slicer),
+                (rds_slicer, rds_diff),
+                (rds_diff,   rds_decoder),
+            ]
+            for a, b in chain:
+                tb.connect(a, b)
+                stream_connections.append((a, b))
 
             tb.msg_connect(rds_decoder, "out", rds_parser, "in")
 
-            # C++ blocks can't have Python callbacks set directly.
-            # Bridge the parser's output port to a Python block that calls our callback.
             bridge = _RdsMsgBridge(self._on_rds_pmt)
             tb.msg_connect(rds_parser, "out", bridge, "in")
-            tb._rds_bridge = bridge  # keep a reference so GC doesn't collect it
-            logger.info("gr-rds connected")
+            tb._rds_bridge = bridge  # prevent GC
+            logger.info("gr-rds connected (manual BPSK chain, gr-rds 3.10)")
 
         except Exception as e:
             logger.info("gr-rds not available, skipping RDS: %s", e)
-            # Undo any stream connections already added to the flowgraph
             for a, b in reversed(stream_connections):
                 try:
                     tb.disconnect(a, b)
