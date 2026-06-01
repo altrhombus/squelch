@@ -36,8 +36,9 @@ def _zero_zi(sos: np.ndarray) -> np.ndarray:
     return np.zeros((sos.shape[0], 2), dtype=np.float64)
 
 
-_LIMITER_KNEE     = 0.85    # soft-knee starts here; converges to ±1.0 above
-_SHELF_MAX_DEPTH  = 0.292   # (1 − 10^(−3/20)): blend fraction → -3 dB HF at noise_gate=0
+_LIMITER_KNEE        = 0.85    # soft-knee starts here; converges to ±1.0 above
+_SHELF_MAX_DEPTH     = 0.292   # (1 − 10^(−3/20)): blend fraction → -3 dB HF at noise_gate=0
+_STEREO_RESTORE_MAX  = 1.2    # max side-channel boost at blend=0; scales linearly with (1-blend)
 
 # ITU-R BS.1770-4 K-weighting filter — two cascaded biquads, pre-computed for 48 kHz.
 # Stage 1: head-acoustics pre-filter (high-shelf boost above ~1 kHz).
@@ -257,6 +258,13 @@ class FmStereoDemodulator:
         self._agc_gain   = 1.0
         self._agc_warmup = 20
 
+        # --- stereo width restoration filter ---
+        # Bandpass the side channel to 300–3500 Hz before boosting.  HF L-R
+        # noise (above ~4 kHz) stays attenuated; the musically important midrange
+        # stereo content (voices, instruments) is selectively recovered.
+        self._swid_sos = butter(4, [300, 3_500], 'bandpass', fs=_AUDIO_RATE, output='sos')
+        self._swid_zi  = _zero_zi(self._swid_sos)
+
         # --- spectral noise subtraction (one instance per channel) ---
         self._ss_l = _SpectralSubtractor()
         self._ss_r = _SpectralSubtractor()
@@ -426,6 +434,24 @@ class FmStereoDemodulator:
         in_noise  = rms <= _AGC_GATE
         l32       = self._ss_l.process(l32, in_noise)
         r32       = self._ss_r.process(r32, in_noise)
+
+        # 10b.5  Stereo width restoration.
+        #        The blend gate attenuates L-R uniformly to suppress discriminator
+        #        noise, but HF noise (above ~4 kHz) is what forced the blend down —
+        #        the midrange L-R content (300–3500 Hz) has acceptable SNR and
+        #        contains most of the musical stereo information (voices, guitars,
+        #        synths).  Boost the bandpassed side proportionally to (1-blend)
+        #        to recover that width without amplifying the HF noise floor.
+        #        At blend=1 (full stereo): restore=0, pass-through.
+        #        At blend=0.42 (WMSE): 300-3500 Hz side is boosted ~1.7×.
+        #        At blend=0 (full mono): side=0, restoration is a no-op.
+        mid             = (l32 + r32) * 0.5
+        side            = (l32 - r32) * 0.5
+        side_bp, self._swid_zi = sosfilt(self._swid_sos, side, zi=self._swid_zi)
+        restore         = (1.0 - blend) * _STEREO_RESTORE_MAX
+        enhanced_side   = (side + restore * side_bp).astype(np.float32)
+        l32             = (mid + enhanced_side).astype(np.float32)
+        r32             = (mid - enhanced_side).astype(np.float32)
 
         # 10c. K-weighted loudness measurement (ITU-R BS.1770).
         #      Filter both channels through the two-stage K-weighting SOS and
