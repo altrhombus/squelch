@@ -139,7 +139,10 @@ class RadioPipeline:
         # to the ~30 dB noise-figure optimum.  We start near 30 dB and
         # step only to keep the IQ RMS inside the safe operating range.
         if band == "fm" and gain == "auto":
-            avail_gains = sorted(sdr.gain_values)
+            # rtlsdr_get_tuner_gains() returns tenths-of-dB (e.g. 297 = 29.7 dB).
+            # pyrtlsdr exposes these raw values via gain_values; divide by 10 so
+            # our search and sdr.gain setter (which expects dB) both work correctly.
+            avail_gains = sorted(v / 10.0 for v in sdr.gain_values)
             g_idx = min(range(len(avail_gains)),
                         key=lambda i: abs(avail_gains[i] - _FM_GAIN_START))
             sdr.gain = avail_gains[g_idx]
