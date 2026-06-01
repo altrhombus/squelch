@@ -85,6 +85,12 @@ class FmStereoDemodulator:
         self._pilot_sos      = butter(4, [17_000, 21_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_sos        = butter(4, [23_000, 53_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_lp_sos     = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        # Narrow L-R path at 8 kHz — mirrors the L+R adaptive bandwidth logic.
+        # On noisy signals the 8-15 kHz L-R content is mostly discriminator
+        # noise, not program stereo.  Blending toward narrow when noise_gate is
+        # low directly reduces the "ssss" hiss character without touching the
+        # L+R mono channel or affecting clean stations (noise_gate ≈ 1).
+        self._lmr_narr_sos   = butter(8,  8_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
         # Above FM program content (L+R 0-15k, pilot 19k, L-R 23-53k, RDS 57k)
         # and below Nyquist (120k): this band contains only discriminator noise.
         # Its RMS is a direct measure of FM SNR and drives the noise gate.
@@ -96,6 +102,7 @@ class FmStereoDemodulator:
         self._pilot_zi       = _zero_zi(self._pilot_sos)
         self._lmr_zi         = _zero_zi(self._lmr_sos)
         self._lmr_lp_zi      = _zero_zi(self._lmr_lp_sos)
+        self._lmr_narr_zi    = _zero_zi(self._lmr_narr_sos)
         self._noise_zi       = _zero_zi(self._noise_sos)
 
         # --- de-emphasis IIR (first-order) ---
@@ -131,9 +138,11 @@ class FmStereoDemodulator:
         self._blend_init   = False   # True after first process() call
 
         # --- audio AGC state ---
-        # Very slow update (α=0.02 → τ≈5 s) prevents pumping artefacts.
-        # Gain clamped to 0.1–10× to avoid runaway on silence or clipping.
-        self._agc_gain = 1.0
+        # Fast warmup for the first 20 blocks (~2 s) so the audio snaps to
+        # target level immediately after tuning, then hands off to the slow
+        # release (α=0.005, τ≈22 s) which prevents noise pumping at steady state.
+        self._agc_gain   = 1.0
+        self._agc_warmup = 20
 
     def process(self, iq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -180,10 +189,13 @@ class FmStereoDemodulator:
         c38_raw   = (pilot_a ** 2)
         carrier38 = (c38_raw / (np.abs(c38_raw) + 1e-10)).real.astype(np.float64)
 
-        # 7. Coherent demod of DSB-SC L-R, LPF, decimate
-        lmr_demod              = lmr_band * carrier38 * 2.0
-        lmr_full, self._lmr_lp_zi = sosfilt(self._lmr_lp_sos, lmr_demod, zi=self._lmr_lp_zi)
-        lmr = lmr_full[::_AUDIO_DECIM].astype(np.float32)
+        # 7. Coherent demod of DSB-SC L-R.  Two LPF paths computed here;
+        #    they are blended by noise_gate after it is computed in step 8.
+        lmr_demod                    = lmr_band * carrier38 * 2.0
+        lmr_wide_full, self._lmr_lp_zi  = sosfilt(self._lmr_lp_sos,   lmr_demod, zi=self._lmr_lp_zi)
+        lmr_narr_full, self._lmr_narr_zi = sosfilt(self._lmr_narr_sos, lmr_demod, zi=self._lmr_narr_zi)
+        lmr_wide = lmr_wide_full[::_AUDIO_DECIM].astype(np.float32)
+        lmr_narr = lmr_narr_full[::_AUDIO_DECIM].astype(np.float32)
 
         # 8. Stereo blend based on pilot RMS and raw IQ signal strength.
         #
@@ -243,11 +255,15 @@ class FmStereoDemodulator:
         blend = self._blend_smooth
         self.last_blend = blend
 
-        # Adaptive audio bandwidth: blend wide (15 kHz) and narrow (8 kHz)
-        # L+R paths proportionally to signal strength.  On weak signals the
-        # high-frequency path carries mainly discriminator noise; this removes
-        # it while preserving speech/music intelligibility.
+        # Adaptive L+R bandwidth: blend wide (15 kHz) and narrow (8 kHz)
+        # proportionally to signal strength.
         lpr = (lpr_wide * blend + lpr_narrow * (1.0 - blend)).astype(np.float32)
+
+        # Adaptive L-R bandwidth: same principle applied to the stereo channel.
+        # At noise_gate=1 (clean): full 15 kHz L-R separation.
+        # At noise_gate=0 (noisy): 8 kHz L-R — the 8-15 kHz L-R band on a
+        # marginal signal is mostly discriminator noise, not program stereo.
+        lmr = (lmr_wide * noise_gate + lmr_narr * (1.0 - noise_gate)).astype(np.float32)
 
         l = (lpr + lmr * blend).astype(np.float32)
         r = (lpr - lmr * blend).astype(np.float32)
@@ -272,8 +288,12 @@ class FmStereoDemodulator:
         #     there is little overshoot when the next song hits.
         rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
         target_gain = 0.12 / rms
-        alpha = 0.3 if target_gain < self._agc_gain else 0.005
-        self._agc_gain += alpha * (target_gain - self._agc_gain)
+        if self._agc_warmup > 0:
+            self._agc_warmup -= 1
+            alpha_agc = 0.3   # fast convergence for first ~2 s after tuning
+        else:
+            alpha_agc = 0.3 if target_gain < self._agc_gain else 0.005
+        self._agc_gain += alpha_agc * (target_gain - self._agc_gain)
         self._agc_gain = float(np.clip(self._agc_gain, 0.1, 10.0))
         l32 = _soft_limit((l32 * self._agc_gain).astype(np.float64)).astype(np.float32)
         r32 = _soft_limit((r32 * self._agc_gain).astype(np.float64)).astype(np.float32)
