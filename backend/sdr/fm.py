@@ -87,6 +87,15 @@ class FmStereoDemodulator:
         self._de_l_zi  = np.zeros(1)
         self._de_r_zi  = np.zeros(1)
 
+        # --- DC blocker (post de-emphasis) ---
+        # The coherent L-R demodulator (pilot² → carrier38) can introduce a
+        # small DC bias when the carrier normalization is imperfect.  De-emphasis
+        # passes DC at unity gain so nothing else removes it; a 5 Hz highpass
+        # removes the offset without touching any audible FM content (≥ 30 Hz).
+        self._dc_sos   = butter(2, 5, 'highpass', fs=_AUDIO_RATE, output='sos')
+        self._dc_l_zi  = _zero_zi(self._dc_sos)
+        self._dc_r_zi  = _zero_zi(self._dc_sos)
+
         # --- blend smoothing state ---
         # Asymmetric time constants: fast attack (falling blend → protect ears
         # from noise burst) and slow release (rising blend → avoid flicker on
@@ -196,14 +205,22 @@ class FmStereoDemodulator:
         l, self._de_l_zi = lfilter(self._de_b, self._de_a, l, zi=self._de_l_zi)
         r, self._de_r_zi = lfilter(self._de_b, self._de_a, r, zi=self._de_r_zi)
 
+        # 9b. DC blocker — remove any carrier-induced DC bias before encoding
+        l, self._dc_l_zi = sosfilt(self._dc_sos, l, zi=self._dc_l_zi)
+        r, self._dc_r_zi = sosfilt(self._dc_sos, r, zi=self._dc_r_zi)
+
         l32 = l.astype(np.float32)
         r32 = r.astype(np.float32)
 
         # 10. Slow audio AGC: normalise perceived loudness across stations.
-        #     α=0.02 → τ≈5 s — slow enough to avoid pumping on dynamic
-        #     content.  Gain is clamped to 0.1–10× to prevent runaway.
+        #     Target RMS is scaled by the smoothed blend factor so that on a
+        #     noisy signal (blend→0) the AGC settles at a quiet background
+        #     level rather than amplifying discriminator noise to full volume.
+        #     At blend=0: target=0.05 (−26 dBFS, near-silent).
+        #     At blend=1: target=0.25 (−12 dBFS, normal level).
         rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
-        self._agc_gain += 0.02 * (0.25 / rms - self._agc_gain)
+        agc_target = 0.05 + 0.20 * blend
+        self._agc_gain += 0.02 * (agc_target / rms - self._agc_gain)
         self._agc_gain = float(np.clip(self._agc_gain, 0.1, 10.0))
         l32 = np.clip(l32 * self._agc_gain, -1.0, 1.0).astype(np.float32)
         r32 = np.clip(r32 * self._agc_gain, -1.0, 1.0).astype(np.float32)
