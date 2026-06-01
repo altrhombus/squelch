@@ -116,9 +116,8 @@ class RdsDecoder:
 
         # Bit-stream buffer (at 19 kHz)
         self._sample_buf: list[float] = []
-        self._bit_buf: list[int] = []     # raw BPSK bits
-        self._diff_buf: list[int] = []    # differential decoded
-        self._prev_bit = 0
+        self._bit_buf: list[int] = []     # 26-bit sliding window for syndrome check
+        self._prev_bit = 0               # for differential decoding
 
         # Sync state
         self._synced  = False
@@ -173,62 +172,37 @@ class RdsDecoder:
     # ------------------------------------------------------------------
 
     def _extract_bits(self):
-        """Clock-recover bits from the sample buffer using zero-crossing timing."""
+        """
+        Sample the baseband signal at the RDS bit rate and differential-decode.
+
+        RDS uses differential BPSK — each bit is encoded as a phase change
+        (1) or no change (0).  After coherent demodulation to baseband the
+        signal is ±1 per bit period; differential decoding (XOR consecutive
+        samples) recovers the data bits directly.
+
+        There is NO additional Manchester/biphase layer in RDS.  The earlier
+        _manchester_and_group step was wrong and was effectively halving the
+        bit rate reaching the syndrome checker, which is why decoding was
+        extremely rare (one group per several minutes instead of ~11/sec).
+        """
         buf = self._sample_buf
-        sps = _SPS  # ≈ 16
+        sps = _SPS   # exactly 16.0 = 19000 / 1187.5
 
-        # Coarse clock: step through buffer taking one sample per bit period
         pos = 0.0
-        new_bits: list[int] = []
-
         while pos + sps <= len(buf):
-            # Sample at the current clock position
             idx = int(pos + sps / 2)
             if idx < len(buf):
-                new_bits.append(1 if buf[idx] >= 0.0 else 0)
+                raw = 1 if buf[idx] >= 0.0 else 0
+                diff = raw ^ self._prev_bit
+                self._prev_bit = raw
+                self._push_bit(diff)
             pos += sps
 
-        # Consume the used samples
         consumed = int(pos)
         self._sample_buf = buf[consumed:]
-
-        if not new_bits:
-            return
-
-        # Differential decode
-        for bit in new_bits:
-            diff = bit ^ self._prev_bit
-            self._prev_bit = bit
-            self._diff_buf.append(diff)
-
-        self._manchester_and_group()
-
-    def _manchester_and_group(self):
-        """Manchester decode diff_buf → bits, then do block sync + CRC."""
-        db = self._diff_buf
-        rds_bits: list[int] = []
-
-        i = 0
-        while i + 1 < len(db):
-            b0, b1 = db[i], db[i+1]
-            if b0 == 0 and b1 == 1:
-                rds_bits.append(0)
-                i += 2
-            elif b0 == 1 and b1 == 0:
-                rds_bits.append(1)
-                i += 2
-            else:
-                # Manchester violation — resync: skip one sample
-                i += 1
-
-        # i is already the consumed position in db (2 per valid pair, 1 per skip)
-        self._diff_buf = db[i:]
-        # Trim diff_buf to avoid unbounded growth
-        if len(self._diff_buf) > 400:
-            self._diff_buf = self._diff_buf[-200:]
-
-        for bit in rds_bits:
-            self._push_bit(bit)
+        # Guard against unbounded growth if processing falls behind
+        if len(self._sample_buf) > 800:
+            self._sample_buf = self._sample_buf[-400:]
 
     def _push_bit(self, bit: int):
         """Push one RDS bit into the 26-bit sliding window for sync/decode."""
