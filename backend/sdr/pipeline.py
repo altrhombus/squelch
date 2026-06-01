@@ -52,6 +52,7 @@ class RadioPipeline:
         self._freq: Optional[float] = None
         self._demod = None
         self._rds:  Optional[RdsDecoder] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -128,6 +129,7 @@ class RadioPipeline:
         logger.info("SDR started: %.3f MHz [%s] at %.0f MHz SR", freq_hz / 1e6, band, sr / 1e6)
 
         loop = asyncio.get_event_loop()
+        self._loop = loop   # saved for use in the executor-thread _on_rds callback
 
         from ..streaming import AacEncoder
         encoder = AacEncoder(stereo=(band in ("fm", "hd")))
@@ -168,7 +170,10 @@ class RadioPipeline:
             if self._band == "fm":
                 l, r, composite = self._demod.process(iq)
                 if self._rds is not None:
-                    self._rds.feed(composite)
+                    try:
+                        self._rds.feed(composite)
+                    except Exception as e:
+                        logger.debug("RDS error: %s", e)
                 return encoder.encode(l, r)
 
             elif self._band in ("am", "scanner"):
@@ -203,9 +208,12 @@ class RadioPipeline:
         return None
 
     def _on_rds(self, data: dict):
-        """Called from executor thread when RDS fields are decoded."""
-        # schedule the metadata update on the event loop
-        asyncio.get_event_loop().call_soon_threadsafe(
+        """Called from the executor thread — must not use asyncio directly."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        # call_soon_threadsafe is the correct way to schedule from a thread
+        loop.call_soon_threadsafe(
             self._meta.update_rds,
             data.get("ps") or None,
             data.get("rt") or None,
