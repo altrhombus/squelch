@@ -61,7 +61,10 @@ class FmStereoDemodulator:
         # by the stereo-blend factor so bandwidth narrows continuously as the
         # signal weakens (same technique used in hardware FM tuner ICs).
         self._lpr_sos        = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
-        self._lpr_narrow_sos = butter(8,  8_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        # Narrow path at 4 kHz (telephone bandwidth).  Used at blend=0 on
+        # very noisy stations; ∫₀⁴f²df vs ∫₀⁸f²df gives ~6 dB less
+        # discriminator noise than the previous 8 kHz floor.
+        self._lpr_narrow_sos = butter(8,  4_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
         self._pilot_sos      = butter(4, [17_000, 21_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_sos        = butter(4, [23_000, 53_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_lp_sos     = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
@@ -123,6 +126,13 @@ class FmStereoDemodulator:
         # 2. FM phase discriminator → composite baseband
         z = demod_iq[1:] * np.conj(demod_iq[:-1])
         composite = (np.angle(z) * (_DEMOD_RATE / (2.0 * np.pi * _MAX_DEV))).astype(np.float64)
+
+        # FM click blanking: a phase slip (cycle skip) produces a single
+        # sample near ±DEMOD_RATE/MAX_DEV = ±3.2 normalized.  Legitimate
+        # broadcast audio never exceeds ±1.0 (100% deviation); clipping
+        # at ±1.5 removes the worst spikes before they survive the LPF
+        # and appear as crackle in the audio output.
+        composite = np.clip(composite, -1.5, 1.5)
 
         # 3. L+R: two parallel paths — wide (15 kHz) and narrow (8 kHz).
         #    The narrow path removes HF hiss on weak signals; they are blended
@@ -213,14 +223,10 @@ class FmStereoDemodulator:
         r32 = r.astype(np.float32)
 
         # 10. Slow audio AGC: normalise perceived loudness across stations.
-        #     Target RMS is scaled by the smoothed blend factor so that on a
-        #     noisy signal (blend→0) the AGC settles at a quiet background
-        #     level rather than amplifying discriminator noise to full volume.
-        #     At blend=0: target=0.05 (−26 dBFS, near-silent).
-        #     At blend=1: target=0.25 (−12 dBFS, normal level).
+        #     α=0.02 → τ≈5 s — slow enough to avoid pumping.
+        #     Gain is clamped to 0.1–10× to prevent runaway on silence.
         rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
-        agc_target = 0.05 + 0.20 * blend
-        self._agc_gain += 0.02 * (agc_target / rms - self._agc_gain)
+        self._agc_gain += 0.02 * (0.25 / rms - self._agc_gain)
         self._agc_gain = float(np.clip(self._agc_gain, 0.1, 10.0))
         l32 = np.clip(l32 * self._agc_gain, -1.0, 1.0).astype(np.float32)
         r32 = np.clip(r32 * self._agc_gain, -1.0, 1.0).astype(np.float32)
