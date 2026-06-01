@@ -173,7 +173,7 @@ class RadioPipeline:
                     try:
                         self._rds.feed(composite)
                     except Exception as e:
-                        logger.debug("RDS error: %s", e)
+                        logger.warning("RDS error: %s", e)
                 return encoder.encode(l, r)
 
             elif self._band in ("am", "scanner"):

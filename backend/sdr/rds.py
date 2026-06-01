@@ -18,9 +18,12 @@ Call feed(composite, pilot_analytic) each DSP block. The callback is
 invoked with a dict when any field changes.
 """
 
+import logging
 import numpy as np
 from scipy.signal import butter, sosfilt, sosfilt_zi, resample_poly, hilbert
 from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +256,11 @@ class RdsDecoder:
                 self._block_types = ["A"]
                 self._bit_buf.clear()
         else:
-            expected = {"A": "B", "B": "C", "C": "D", "C'": "D"}
+            # Expected next block given the last received
+            _next = {"A": ("B",), "B": ("C", "C'"), "C": ("D",), "C'": ("D",)}
             prev = self._block_types[-1] if self._block_types else None
-            if block_type not in ("A", "B", "C", "C'", "D"):
+            if prev and block_type not in _next.get(prev, ()):
+                # Unexpected sequence — lose sync and start searching again
                 self._synced = False
                 self._blocks.clear()
                 self._block_types.clear()
@@ -267,10 +272,12 @@ class RdsDecoder:
 
             if len(self._blocks) == 4:
                 self._decode_group(self._blocks, self._block_types)
-                # After a complete group, start fresh looking for next A
                 self._blocks.clear()
                 self._block_types.clear()
-                self._synced = False  # re-acquire sync each group (conservative)
+                # Stay synced after a good group — re-acquire only on failure.
+                # Re-syncing every group throws away the alignment we just found
+                # and wastes 26 bits searching each time.
+                self._synced = True
 
     def _decode_group(self, blocks: list[int], types: list[str]):
         if len(blocks) < 4:
@@ -346,4 +353,5 @@ class RdsDecoder:
                 update["rt"] = rt
 
         if update:
+            logger.debug("RDS group decoded: type=%d%s %s", group_type, "B" if b0 else "A", update)
             self._cb(update)
