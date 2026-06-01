@@ -290,12 +290,26 @@ class FmStereoDemodulator:
         z = demod_iq[1:] * np.conj(demod_iq[:-1])
         composite = (np.angle(z) * (_DEMOD_RATE / (2.0 * np.pi * _MAX_DEV))).astype(np.float64)
 
-        # FM click blanking: a phase slip (cycle skip) produces a single
-        # sample near ±DEMOD_RATE/MAX_DEV = ±3.2 normalized.  Legitimate
-        # broadcast audio never exceeds ±1.0 (100% deviation); clipping
-        # at ±1.5 removes the worst spikes before they survive the LPF
-        # and appear as crackle in the audio output.
+        # FM click blanking — two stages:
+        #
+        # Stage 1: hard clip at ±1.5 catches single-sample phase slips
+        # (cycle skips) which can reach ±3.2 normalised.
         composite = np.clip(composite, -1.5, 1.5)
+        #
+        # Stage 2: multi-sample burst interpolation.  A hard clip turns a
+        # 2–5 sample burst into a rectangular pulse that rings through the
+        # 15 kHz LPF and becomes an audible click (~1.5 dB above typical
+        # audio level).  Anything above ±1.1 (146 % of max FM deviation)
+        # is noise/phase-slip — nothing legitimate exceeds that.  The mask
+        # is dilated by 1 sample on each side to absorb the burst slope;
+        # flagged samples are replaced with linear interpolation over clean
+        # neighbours.  The `any()` guard makes this a no-op on clean blocks.
+        _ck        = np.abs(composite) > 1.1
+        _ck[1:]   |= _ck[:-1]
+        _ck[:-1]  |= _ck[1:]
+        if _ck.any():
+            _xi            = np.where(~_ck)[0]
+            composite[_ck] = np.interp(np.where(_ck)[0], _xi, composite[_xi])
 
         # 3. L+R: two parallel paths — wide (15 kHz) and narrow (8 kHz).
         #    The narrow path removes HF hiss on weak signals; they are blended
