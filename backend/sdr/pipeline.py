@@ -209,6 +209,7 @@ class RadioPipeline:
             "iq_rms":        round(float(getattr(d, "last_iq_rms",        0.0)), 4),
             "composite_rms": round(float(getattr(d, "last_composite_rms", 0.0)), 4),
             "pilot_rms":     round(float(getattr(d, "last_pilot_rms",     0.0)), 4),
+            "noise_rms":     round(float(getattr(d, "last_noise_rms",     0.0)), 4),
             "blend":         round(float(getattr(d, "last_blend",         0.0)), 3),
             "audio_rms":     round(float(getattr(d, "last_audio_rms",     0.0)), 4),
         }

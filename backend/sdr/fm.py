@@ -49,6 +49,7 @@ class FmStereoDemodulator:
     last_pilot_rms:    float = 0.0
     last_iq_rms:       float = 0.0   # raw ADC signal power
     last_composite_rms: float = 0.0  # FM discriminator output
+    last_noise_rms:    float = 0.0   # discriminator noise floor (65-90 kHz band)
     last_blend:        float = 0.0   # stereo blend factor 0-1
     last_audio_rms:    float = 0.0   # decoded output level
 
@@ -64,6 +65,10 @@ class FmStereoDemodulator:
         self._pilot_sos      = butter(4, [17_000, 21_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_sos        = butter(4, [23_000, 53_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_lp_sos     = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        # Above FM program content (L+R 0-15k, pilot 19k, L-R 23-53k, RDS 57k)
+        # and below Nyquist (120k): this band contains only discriminator noise.
+        # Its RMS is a direct measure of FM SNR and drives the noise gate.
+        self._noise_sos      = butter(4, [65_000, 90_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
 
         # --- per-block filter states ---
         self._lpr_zi         = _zero_zi(self._lpr_sos)
@@ -71,6 +76,7 @@ class FmStereoDemodulator:
         self._pilot_zi       = _zero_zi(self._pilot_sos)
         self._lmr_zi         = _zero_zi(self._lmr_sos)
         self._lmr_lp_zi      = _zero_zi(self._lmr_lp_sos)
+        self._noise_zi       = _zero_zi(self._noise_sos)
 
         # --- de-emphasis IIR (first-order) ---
         dt    = 1.0 / _AUDIO_RATE
@@ -151,9 +157,24 @@ class FmStereoDemodulator:
         self.last_iq_rms        = iq_rms
         self.last_composite_rms = float(np.sqrt(np.mean(composite ** 2)))
 
+        # Measure discriminator noise floor in the 65-90 kHz band (no FM
+        # program content there).  Normalize against pilot so the gate is
+        # self-calibrating regardless of RTL-SDR gain or signal level.
+        # noise_rms/pilot_rms ≈ 0 on a clean signal; ≈ 1+ on a noisy one.
+        # _NOISE_RATIO_SCALE sets the ratio at which the gate fully closes
+        # (tune this constant once real noise_rms values are observed).
+        _NOISE_RATIO_SCALE = 1.5
+        noise_band, self._noise_zi = sosfilt(self._noise_sos, composite, zi=self._noise_zi)
+        noise_rms = float(np.sqrt(np.mean(noise_band ** 2)))
+        self.last_noise_rms = noise_rms
+        noise_gate = float(np.clip(
+            1.0 - (noise_rms / (pilot_rms + 1e-6)) / _NOISE_RATIO_SCALE,
+            0.0, 1.0,
+        ))
+
         pilot_gate = float(np.clip((pilot_rms - 0.02) / 0.06, 0.0, 1.0))
         iq_gate    = float(np.clip((iq_rms    - 0.05) / 0.15, 0.0, 1.0))
-        blend_raw  = pilot_gate * iq_gate
+        blend_raw  = pilot_gate * iq_gate * noise_gate
 
         # Smooth blend with asymmetric time constants to prevent block-edge
         # clicks and flicker on marginal signals.
