@@ -36,7 +36,8 @@ def _zero_zi(sos: np.ndarray) -> np.ndarray:
     return np.zeros((sos.shape[0], 2), dtype=np.float64)
 
 
-_LIMITER_KNEE = 0.85   # soft-knee starts here; converges to ±1.0 above
+_LIMITER_KNEE     = 0.85    # soft-knee starts here; converges to ±1.0 above
+_SHELF_MAX_DEPTH  = 0.292   # (1 − 10^(−3/20)): blend fraction → -3 dB HF at noise_gate=0
 
 def _soft_limit(x: np.ndarray) -> np.ndarray:
     """
@@ -124,6 +125,17 @@ class FmStereoDemodulator:
         self._dc_r_zi  = _zero_zi(self._dc_sos)
 
         self._stereo_mode = stereo_mode   # "auto" | "force" | "mono"
+
+        # --- noise-adaptive high-frequency shelf ---
+        # A 9 kHz LPF whose output is blended with the passthrough by
+        # (1 - noise_gate). Clean stations see no attenuation; noisy ones
+        # get a smooth rolloff above 9 kHz (max -3 dB at noise_gate=0).
+        # Separate smoothed noise_gate so the shelf works in all stereo modes,
+        # including mono or force-stereo where pilot_gate may differ from noise_gate.
+        self._shelf_sos         = butter(2, 9_000, 'lowpass', fs=_AUDIO_RATE, output='sos')
+        self._shelf_l_zi        = _zero_zi(self._shelf_sos)
+        self._shelf_r_zi        = _zero_zi(self._shelf_sos)
+        self._noise_gate_smooth = 1.0   # start at full passthrough; converges on first block
 
         # --- blend smoothing state ---
         # Asymmetric time constants: fast attack (falling blend → protect ears
@@ -279,7 +291,22 @@ class FmStereoDemodulator:
         l32 = l.astype(np.float32)
         r32 = r.astype(np.float32)
 
-        # 10. Asymmetric audio AGC + soft-knee limiter.
+        # 10a. Noise-adaptive high-frequency shelf.
+        #      Blend passthrough with 9 kHz LPF output by (1 − noise_gate).
+        #      At noise_gate=1 (clean): pure passthrough, 0 dB across band.
+        #      At noise_gate=0.62 (WMSE): ≈ −1 dB above 15 kHz.
+        #      At noise_gate=0 (unusable): ≈ −3 dB above 15 kHz.
+        #      Fast drop (α=0.10) prevents an HF burst when the signal clears;
+        #      slow rise (α=0.05) avoids flutter on marginal/fluctuating signals.
+        alpha_shelf = 0.10 if noise_gate < self._noise_gate_smooth else 0.05
+        self._noise_gate_smooth += alpha_shelf * (noise_gate - self._noise_gate_smooth)
+        shelf_depth = (1.0 - self._noise_gate_smooth) * _SHELF_MAX_DEPTH
+        lp_l, self._shelf_l_zi = sosfilt(self._shelf_sos, l32, zi=self._shelf_l_zi)
+        lp_r, self._shelf_r_zi = sosfilt(self._shelf_sos, r32, zi=self._shelf_r_zi)
+        l32 = ((1.0 - shelf_depth) * l32 + shelf_depth * lp_l).astype(np.float32)
+        r32 = ((1.0 - shelf_depth) * r32 + shelf_depth * lp_r).astype(np.float32)
+
+        # 10b. Asymmetric audio AGC + soft-knee limiter.
         #     Fast attack (α=0.3, τ≈240 ms): quickly pull gain down when loud
         #     content resumes after a quiet passage — prevents the 5-second
         #     distorted surge that occurred with symmetric slow AGC.
