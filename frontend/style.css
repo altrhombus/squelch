@@ -145,12 +145,6 @@ html, body {
   border-radius: 20px;
   margin-left: 4px;
   align-self: center;
-  animation: stereo-pulse 2.4s ease-in-out infinite;
-}
-
-@keyframes stereo-pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.55; }
 }
 
 /* =====================================================

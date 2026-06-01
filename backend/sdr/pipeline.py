@@ -133,6 +133,7 @@ class RadioPipeline:
         from ..streaming import AacEncoder
         encoder = AacEncoder(stereo=(band in ("fm", "hd")))
 
+        first_chunk = True
         try:
             async for iq in sdr.stream(block):
                 chunk = await loop.run_in_executor(
@@ -141,6 +142,10 @@ class RadioPipeline:
                 )
                 if chunk:
                     self._streams.broadcast(chunk)
+                    if first_chunk:
+                        first_chunk = False
+                        self._meta.update_state("live")
+                        asyncio.ensure_future(self._meta.broadcast())
         except asyncio.CancelledError:
             raise
         except Exception as e:

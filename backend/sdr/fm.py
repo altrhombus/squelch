@@ -84,23 +84,29 @@ class FmStereoDemodulator:
         # 5. L-R subcarrier: BPF 23–53 kHz
         lmr_band, self._lmr_zi = sosfilt(self._lmr_sos, composite, zi=self._lmr_zi)
 
-        # 6. Generate 38 kHz carrier via Hilbert squaring of pilot
-        #    hilbert(pilot) ≈ A·e^{jφ}; squaring → A²·e^{j2φ} at 38 kHz
+        # 6. Generate 38 kHz carrier via Hilbert squaring of pilot.
+        #    hilbert(pilot) ≈ A·e^{jφ}; squaring → A²·e^{j2φ} at 38 kHz.
+        #    Normalise to unit amplitude so pilot level doesn't AM-modulate
+        #    the L-R demodulation product (which caused background static).
         pilot_a   = hilbert(pilot).astype(np.complex64)
-        carrier38 = (pilot_a ** 2).real.astype(np.float64)
+        c38_raw   = (pilot_a ** 2)
+        carrier38 = (c38_raw / (np.abs(c38_raw) + 1e-10)).real.astype(np.float64)
 
         # 7. Coherent demod of DSB-SC L-R, LPF, decimate
         lmr_demod              = lmr_band * carrier38 * 2.0
         lmr_full, self._lmr_lp_zi = sosfilt(self._lmr_lp_sos, lmr_demod, zi=self._lmr_lp_zi)
         lmr = lmr_full[::_AUDIO_DECIM].astype(np.float32)
 
-        # 8. Stereo / mono decision based on pilot power
+        # 8. Stereo / mono decision based on pilot power.
+        #    Do NOT halve after the matrix — the /2 was reducing output to
+        #    ~25% of full scale. L+R and L-R signals each occupy a fraction
+        #    of the total FM deviation, so the sum L = (L+R)+(L-R) is already
+        #    well within ±1.0 for a normal broadcast.
         if np.mean(pilot ** 2) > 1e-4:
-            l = ((lpr + lmr) * 0.5).astype(np.float32)
-            r = ((lpr - lmr) * 0.5).astype(np.float32)
+            l = (lpr + lmr).astype(np.float32)
+            r = (lpr - lmr).astype(np.float32)
         else:
-            m = (lpr * 0.5).astype(np.float32)
-            l = r = m
+            l = r = lpr.astype(np.float32)
 
         # 9. De-emphasis
         l, self._de_l_zi = lfilter(self._de_b, self._de_a, l, zi=self._de_l_zi)
