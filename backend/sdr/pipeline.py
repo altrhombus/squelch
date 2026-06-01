@@ -24,6 +24,16 @@ _AM_SR   = 1_200_000
 _BLOCK   = 131_072      # IQ samples per SDR read (≈ 55 ms at 2.4 MHz)
 _AM_BLOCK = 65_536      # IQ samples per read at 1.2 MHz (≈ 55 ms)
 
+# RTL-SDR / R820T2 software gain control for FM.
+# Hardware "auto" AGC targets ADC headroom, not FM SNR.  Above ~35 dB the
+# LNA noise figure degrades faster than the gain helps, so the optimal
+# operating point is typically 28-32 dB.  We start there and only step
+# up/down to keep the IQ RMS inside a safe ADC range.
+_FM_GAIN_START   = 30.0   # dB — starting point; closest available gain used
+_IQ_RMS_LO       = 0.10   # below this: signal too weak, step gain up
+_IQ_RMS_HI       = 0.38   # above this: ADC approaching saturation, step down
+_GAIN_HOLD_BLOCKS = 50    # minimum blocks between gain steps (~5 s at 109 ms/block)
+
 # Aviation band uses AM demodulation even though it's a "scanner" band
 _AVIATION_LO = 118e6
 _AVIATION_HI = 137e6
@@ -54,6 +64,7 @@ class RadioPipeline:
         self._rds:  Optional[RdsDecoder] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._squelch_iq: float = 0.0   # 0 = disabled; mute audio when iq_rms < threshold
+        self._current_gain: Optional[float] = None   # dB; None when hardware auto
 
     # ------------------------------------------------------------------
     # Public API
@@ -122,10 +133,27 @@ class RadioPipeline:
         else:
             sdr.set_direct_sampling(0)
 
-        if gain == "auto":
-            sdr.gain = "auto"
+        # For FM with gain="auto", replace the hardware AGC with software
+        # gain control.  The R820T2 hardware AGC targets ADC headroom only
+        # and typically lands at 40-49 dB, which degrades FM SNR compared
+        # to the ~30 dB noise-figure optimum.  We start near 30 dB and
+        # step only to keep the IQ RMS inside the safe operating range.
+        if band == "fm" and gain == "auto":
+            avail_gains = sorted(sdr.gain_values)
+            g_idx = min(range(len(avail_gains)),
+                        key=lambda i: abs(avail_gains[i] - _FM_GAIN_START))
+            sdr.gain = avail_gains[g_idx]
+            self._current_gain = avail_gains[g_idx]
+            logger.info("FM software gain control: starting at %.1f dB", avail_gains[g_idx])
         else:
-            sdr.gain = float(gain)
+            avail_gains = []
+            g_idx = 0
+            if gain == "auto":
+                sdr.gain = "auto"
+                self._current_gain = None
+            else:
+                sdr.gain = float(gain)
+                self._current_gain = float(gain)
 
         logger.info("SDR started: %.3f MHz [%s] at %.0f MHz SR", freq_hz / 1e6, band, sr / 1e6)
 
@@ -136,6 +164,7 @@ class RadioPipeline:
         encoder = AacEncoder(stereo=(band in ("fm", "hd")))
 
         first_chunk = True
+        hold_blocks = 0   # blocks since last gain step
         try:
             async for iq in sdr.stream(block):
                 chunk = await loop.run_in_executor(
@@ -148,6 +177,25 @@ class RadioPipeline:
                         first_chunk = False
                         self._meta.update_state("live")
                         asyncio.ensure_future(self._meta.broadcast())
+
+                # Software gain control step (FM only)
+                if avail_gains and self._demod is not None:
+                    hold_blocks += 1
+                    if hold_blocks >= _GAIN_HOLD_BLOCKS:
+                        hold_blocks = 0
+                        iq_rms = self._demod.last_iq_rms
+                        if iq_rms > _IQ_RMS_HI and g_idx > 0:
+                            g_idx -= 1
+                            sdr.gain = avail_gains[g_idx]
+                            self._current_gain = avail_gains[g_idx]
+                            logger.info("FM gain stepped down to %.1f dB (iq_rms=%.3f)",
+                                        avail_gains[g_idx], iq_rms)
+                        elif iq_rms < _IQ_RMS_LO and g_idx < len(avail_gains) - 1:
+                            g_idx += 1
+                            sdr.gain = avail_gains[g_idx]
+                            self._current_gain = avail_gains[g_idx]
+                            logger.info("FM gain stepped up to %.1f dB (iq_rms=%.3f)",
+                                        avail_gains[g_idx], iq_rms)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -205,7 +253,7 @@ class RadioPipeline:
         d = self._demod
         if d is None:
             return {}
-        return {
+        m = {
             "iq_rms":        round(float(getattr(d, "last_iq_rms",        0.0)), 4),
             "composite_rms": round(float(getattr(d, "last_composite_rms", 0.0)), 4),
             "pilot_rms":     round(float(getattr(d, "last_pilot_rms",     0.0)), 4),
@@ -213,6 +261,9 @@ class RadioPipeline:
             "blend":         round(float(getattr(d, "last_blend",         0.0)), 3),
             "audio_rms":     round(float(getattr(d, "last_audio_rms",     0.0)), 4),
         }
+        if self._current_gain is not None:
+            m["gain_db"] = round(self._current_gain, 1)
+        return m
 
     def _make_demod(self, band: str, freq_hz: float, deemphasis_us: int):
         if band == "fm":

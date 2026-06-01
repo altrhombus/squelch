@@ -61,10 +61,10 @@ class FmStereoDemodulator:
         # by the stereo-blend factor so bandwidth narrows continuously as the
         # signal weakens (same technique used in hardware FM tuner ICs).
         self._lpr_sos        = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
-        # Narrow path at 4 kHz (telephone bandwidth).  Used at blend=0 on
-        # very noisy stations; ∫₀⁴f²df vs ∫₀⁸f²df gives ~6 dB less
-        # discriminator noise than the previous 8 kHz floor.
-        self._lpr_narrow_sos = butter(8,  4_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        # Narrow path at 8 kHz.  Used at blend=0 on noisy stations to reduce
+        # discriminator noise while preserving basic audio fidelity.  4 kHz
+        # ("telephone") proved too restrictive — music became unintelligible.
+        self._lpr_narrow_sos = butter(8,  8_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
         self._pilot_sos      = butter(4, [17_000, 21_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_sos        = butter(4, [23_000, 53_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_lp_sos     = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
