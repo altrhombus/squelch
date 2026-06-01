@@ -252,8 +252,9 @@ class FmStereoDemodulator:
         self._ss_r = _SpectralSubtractor()
 
         # --- K-weighting filter state (ITU-R BS.1770, per channel) ---
-        self._kw_l_zi = _zero_zi(_K_WEIGHT_SOS)
-        self._kw_r_zi = _zero_zi(_K_WEIGHT_SOS)
+        self._kw_l_zi      = _zero_zi(_K_WEIGHT_SOS)
+        self._kw_r_zi      = _zero_zi(_K_WEIGHT_SOS)
+        self._rms_k_smooth = 0.12   # smoothed K-weighted RMS; init at target level
 
     def process(self, iq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -429,11 +430,17 @@ class FmStereoDemodulator:
         rms_k = float(np.sqrt(np.mean(kw_l ** 2 + kw_r ** 2) / 2)) + 1e-10
 
         # 10d. Asymmetric audio AGC + soft-knee limiter.
-        #     target_gain drives K-weighted loudness to 0.12 rather than flat RMS,
-        #     so the AGC converges on equal perceived loudness across all stations.
-        #     Time constants and gate are unchanged from before.
-        target_gain = 0.12 / rms_k
+        #      rms_k is smoothed over ~2 s (α=0.05, τ≈20 blocks) before computing
+        #      target_gain.  Raw per-block K-weighted RMS varies more than broadband
+        #      RMS because the K-weighting pre-filter boosts 2–8 kHz — exactly
+        #      where sibilants and voice transients concentrate.  Without smoothing,
+        #      the fast attack chases individual phonemes and compresses vocal
+        #      dynamics into audible distortion.  The 2 s window still provides
+        #      correct station-to-station loudness normalisation while being
+        #      transparent within a programme.
         if rms > _AGC_GATE:
+            self._rms_k_smooth += 0.05 * (rms_k - self._rms_k_smooth)
+            target_gain = 0.12 / (self._rms_k_smooth + 1e-10)
             if self._agc_warmup > 0:
                 self._agc_warmup -= 1
                 alpha_agc = 0.3   # fast convergence for first ~2 s after tuning
