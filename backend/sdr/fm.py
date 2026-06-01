@@ -84,12 +84,12 @@ class _SpectralSubtractor:
     """
 
     def __init__(self, n_fft: int = 1024, hop: int = 512,
-                 over_sub: float = 1.0, floor_frac: float = 0.1,
+                 over_sub: float = 0.6, floor_frac: float = 0.2,
                  noise_alpha: float = 0.9):
         self._n_fft       = n_fft
         self._hop         = hop
-        self._over_sub    = over_sub      # subtraction factor (1.0 = no over-sub)
-        self._floor_frac  = floor_frac    # floor as fraction of input amplitude
+        self._over_sub    = over_sub      # subtract this fraction of noise estimate (< 1.0 reduces musical noise)
+        self._floor_frac  = floor_frac    # floor as fraction of input amplitude (-14 dB at 0.2)
         self._noise_alpha = noise_alpha   # EMA smoothing of noise PSD estimate
 
         self._win         = np.sqrt(np.hanning(n_fft)).astype(np.float64)
