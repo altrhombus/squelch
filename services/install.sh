@@ -10,13 +10,32 @@ SERVICE_USER="${SUDO_USER:-$(whoami)}"
 echo "==> Installing system dependencies"
 sudo apt-get update -qq
 sudo apt-get install -y \
-  rtl-sdr \
-  librtlsdr-dev \
+  libusb-1.0-0-dev \
+  cmake \
+  build-essential \
+  git \
   python3 \
   python3-pip \
   python3-venv \
   python3-numpy \
   python3-scipy
+
+# Build librtlsdr from the RTL-SDR Blog fork — the Raspbian apt package is
+# missing rtlsdr_set_dithering and other symbols required by pyrtlsdr 0.3+.
+if ldconfig -p | grep -q librtlsdr && rtl_test -t 2>/dev/null | grep -q "rtlsdr_set_dithering"; then
+  echo "    librtlsdr (RTL-SDR Blog fork) already installed"
+else
+  echo "==> Building librtlsdr from RTL-SDR Blog fork"
+  sudo apt-get remove -y rtl-sdr librtlsdr-dev librtlsdr0 2>/dev/null || true
+  RTL_TMP=$(mktemp -d)
+  git clone --depth 1 https://github.com/rtlsdrblog/rtl-sdr-blog "$RTL_TMP/rtl-sdr-blog"
+  cmake -S "$RTL_TMP/rtl-sdr-blog" -B "$RTL_TMP/rtl-sdr-blog/build" -DDETACH_KERNEL_DRIVER=ON
+  make -C "$RTL_TMP/rtl-sdr-blog/build" -j"$(nproc)"
+  sudo make -C "$RTL_TMP/rtl-sdr-blog/build" install
+  sudo ldconfig
+  rm -rf "$RTL_TMP"
+  echo "    librtlsdr installed"
+fi
 
 # nrsc5 (HD Radio) — not in Raspbian apt; build from source
 if command -v nrsc5 &>/dev/null; then
