@@ -88,9 +88,7 @@ class MetadataState:
             self.pi_code = pi
             changed = True
         if changed:
-            asyncio.get_event_loop().call_soon_threadsafe(
-                lambda: asyncio.ensure_future(self.broadcast())
-            )
+            asyncio.ensure_future(self.broadcast())
 
     def update_nrsc5(
         self,
@@ -130,9 +128,7 @@ class MetadataState:
             except OSError as e:
                 logger.warning("Failed to copy cover art: %s", e)
         if changed:
-            asyncio.get_event_loop().call_soon_threadsafe(
-                lambda: asyncio.ensure_future(self.broadcast())
-            )
+            asyncio.ensure_future(self.broadcast())
 
     def update_signal(self, bars: int, stereo: bool = None):
         self.signal_bars = max(0, min(5, bars))

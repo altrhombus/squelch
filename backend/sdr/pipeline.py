@@ -68,7 +68,8 @@ class RadioPipeline:
         self._demod = None
         self._rds:  Optional[RdsDecoder] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._squelch_iq: float = 0.0   # 0 = disabled; mute audio when iq_rms < threshold
+        self._squelch_iq: float = 0.0      # 0 = disabled; mute audio when iq_rms < threshold
+        self._squelch_silence_n: int = 5243  # output samples per block; updated on first live block
         self._current_gain: Optional[float] = None   # dB; None when hardware auto
 
     # ------------------------------------------------------------------
@@ -239,21 +240,34 @@ class RadioPipeline:
         """Runs in executor thread: demodulate → encode → return AAC bytes."""
         try:
             if self._band == "fm":
+                # Cheap IQ RMS check before the full DSP chain.  When squelched
+                # we skip everything (resample, filters, Hilbert, spectral sub,
+                # AGC) and return silence directly.  last_iq_rms is updated so
+                # the software gain controller keeps working.
+                iq_rms = float(np.sqrt(np.mean(iq.real**2 + iq.imag**2)))
+                if self._demod is not None:
+                    self._demod.last_iq_rms = iq_rms
+                if self._squelch_iq > 0 and iq_rms < self._squelch_iq:
+                    n = self._squelch_silence_n
+                    return encoder.encode(np.zeros(n, np.float32), np.zeros(n, np.float32))
                 l, r, composite = self._demod.process(iq)
+                self._squelch_silence_n = len(l)
                 if self._rds is not None:
                     try:
                         self._rds.feed(composite)
                     except Exception as e:
                         logger.warning("RDS error: %s", e)
-                if self._squelch_iq > 0 and self._demod.last_iq_rms < self._squelch_iq:
-                    n = len(l)
-                    return encoder.encode(np.zeros(n, np.float32), np.zeros(n, np.float32))
                 return encoder.encode(l, r)
 
             elif self._band in ("am", "scanner"):
+                iq_rms = float(np.sqrt(np.mean(iq.real**2 + iq.imag**2)))
+                if self._demod is not None:
+                    self._demod.last_iq_rms = iq_rms
+                if self._squelch_iq > 0 and iq_rms < self._squelch_iq:
+                    n = self._squelch_silence_n
+                    return encoder.encode(np.zeros(n, np.float32))
                 mono = self._demod.process(iq)
-                if self._squelch_iq > 0 and getattr(self._demod, "last_iq_rms", 1.0) < self._squelch_iq:
-                    return encoder.encode(np.zeros(len(mono), np.float32))
+                self._squelch_silence_n = len(mono)
                 return encoder.encode(mono)
 
         except Exception as e:

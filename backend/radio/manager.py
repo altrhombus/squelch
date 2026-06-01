@@ -154,12 +154,12 @@ class RadioManager:
     # ------------------------------------------------------------------
 
     async def _signal_loop(self):
+        _prev = (-1, None, None)   # (bars, stereo, state) — track last broadcast
         try:
             while True:
                 await asyncio.sleep(1)
                 bars, stereo = self._estimate_signal()
                 self._meta.update_signal(bars, stereo)
-                # Populate diagnostics panel
                 if self._pipeline:
                     m = self._pipeline.signal_metrics
                     m["band"] = self._current_band
@@ -168,7 +168,14 @@ class RadioManager:
                     self._meta.diag = {"band": "hd", "hd_locked": self._meta.hd_locked}
                 else:
                     self._meta.diag = {}
-                await self._meta.broadcast()
+
+                # Only push a WebSocket frame when user-visible state changed.
+                # Floating-point diag metrics update every tick but don't need
+                # to wake every connected client when signal is stable.
+                cur = (bars, stereo, self._meta.state)
+                if cur != _prev:
+                    _prev = cur
+                    await self._meta.broadcast()
         except asyncio.CancelledError:
             pass
 
