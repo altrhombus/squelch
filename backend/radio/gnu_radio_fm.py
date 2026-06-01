@@ -194,6 +194,7 @@ class GnuRadioFM:
             from gnuradio import gr, analog, filter as gr_filter
             import rds
 
+            # Decimate to 250kHz for RDS processing
             rds_decim = int(self.SAMPLE_RATE / 250_000)
             rds_filter = gr_filter.freq_xlating_fir_filter_ccc(
                 rds_decim,
@@ -201,14 +202,19 @@ class GnuRadioFM:
                 0,
                 self.SAMPLE_RATE,
             )
+            # FM demodulate the 250kHz composite to get the baseband with 57kHz RDS subcarrier
             fm_demod = analog.quadrature_demod_cf(250_000 / (2 * 3.14159 * 75_000))
+            # bpsk_demod handles 57kHz subcarrier extraction, clock recovery, and BPSK
+            # decoding → outputs bits (1 byte/sample), which is what rds.decoder expects
+            rds_bpsk = rds.bpsk_demod(250_000)
             rds_decoder = rds.decoder(False, False)
             rds_parser = rds.parser(False, False, 0)
 
             # Connect one hop at a time so we can undo on failure
-            tb.connect(src, rds_filter);       stream_connections.append((src, rds_filter))
-            tb.connect(rds_filter, fm_demod);  stream_connections.append((rds_filter, fm_demod))
-            tb.connect(fm_demod, rds_decoder); stream_connections.append((fm_demod, rds_decoder))
+            tb.connect(src, rds_filter);          stream_connections.append((src, rds_filter))
+            tb.connect(rds_filter, fm_demod);     stream_connections.append((rds_filter, fm_demod))
+            tb.connect(fm_demod, rds_bpsk);       stream_connections.append((fm_demod, rds_bpsk))
+            tb.connect(rds_bpsk, rds_decoder);    stream_connections.append((rds_bpsk, rds_decoder))
 
             tb.msg_connect(rds_decoder, "out", rds_parser, "in")
             rds_parser.set_msg_handler("out", lambda msg: self._handle_rds_msg(msg))

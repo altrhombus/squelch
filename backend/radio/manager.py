@@ -235,7 +235,6 @@ class RadioManager:
             "-i", FIFO_PATH,
             "-c:a", "aac",
             "-b:a", bitrate,
-            "-filter:a", "dynaudnorm",
             "-f", "hls",
             "-hls_time", str(self._segment_dur),
             "-hls_list_size", str(self._playlist_size),
