@@ -111,6 +111,30 @@ function clamp(v, min, max) {
 }
 
 // ---------------------------------------------------------------------------
+// Safari audio unlock
+// ---------------------------------------------------------------------------
+
+// Safari requires play() to be called synchronously inside a user gesture.
+// Any async call (WebSocket callback, setTimeout, hls.js event) is outside
+// the gesture window and will be blocked. The fix: during the first tune()
+// call — which IS a user gesture — play a zero-sample silent WAV. This
+// permanently unlocks the <audio> element for async play() calls for the
+// rest of the page session.
+//
+// The WAV is a minimal valid RIFF/PCM file: 44-byte header, 0 audio samples.
+const _SILENT_WAV =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+let _audioUnlocked = false;
+
+function _unlockAudio() {
+  if (_audioUnlocked) return;
+  _audioUnlocked = true;
+  // Immediately overwritten by attachPlayer() when the real stream is ready.
+  player.src = _SILENT_WAV;
+  player.play().catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
 // Tuning
 // ---------------------------------------------------------------------------
 
@@ -118,6 +142,10 @@ async function tune(freq, band) {
   band = band || currentBand;
   setFreq(freq);
   setBandIfChanged(band);
+
+  // Unlock audio BEFORE the first await — this is still synchronous inside
+  // the user gesture and satisfies Safari's requirement.
+  _unlockAudio();
 
   const res = await api("POST", "/tune", {
     frequency: freq,
@@ -240,29 +268,43 @@ function connectWs() {
 }
 
 function applyMeta(m) {
-  // Station name
+  // Station name — fall back to frequency when RDS hasn't delivered a name yet
   if (m.station_name) {
     elStationName.textContent = m.station_name;
     document.title = m.station_name + " — Squelch";
+  } else if (m.frequency && m.band && m.state !== "idle") {
+    const unit  = m.band === "am" ? "kHz" : "MHz";
+    const freq  = m.band === "am"
+      ? Math.round(m.frequency)
+      : parseFloat(m.frequency).toFixed(1);
+    elStationName.textContent = `${freq} ${unit}`;
+    document.title = `${freq} ${unit} — Squelch`;
+  } else {
+    elStationName.textContent = "Squelch";
+    document.title = "Squelch";
   }
 
-  // Track info
+  // Track info line — shows state progress when there's no RDS track data
   if (m.artist && m.title) {
     elTrackInfo.textContent = `${m.artist} — ${m.title}`;
     elTrackInfo.classList.remove("muted");
   } else if (m.title) {
     elTrackInfo.textContent = m.title;
     elTrackInfo.classList.remove("muted");
-  } else if (!m.station_name) {
-    elTrackInfo.textContent = "Ready to tune";
-    elTrackInfo.classList.add("muted");
   } else {
-    elTrackInfo.textContent = "";
+    const hint = {
+      idle:      "Ready to tune",
+      tuning:    "Tuning…",
+      buffering: "Buffering…",
+      live:      m.band === "fm" ? "Waiting for RDS…" : "Live",
+    }[m.state] || "";
+    elTrackInfo.textContent = hint;
+    elTrackInfo.classList.add("muted");
   }
 
   // Cover art
   if (m.has_art && m.art_url) {
-    elArt.src = m.art_url + "?t=" + Date.now(); // bust cache
+    elArt.src = m.art_url + "?t=" + Date.now();
   } else {
     elArt.src = "/static/placeholder.svg";
   }
@@ -279,7 +321,8 @@ function applyMeta(m) {
   // Stereo indicator
   toggleEl(elStereo, m.stereo);
 
-  // Signal bars
+  // Signal bars — 0 when idle/tuning, 1–5 once live
+  // 3 bars = receiving audio, 4 = RDS decoded (good signal), 5 = HD locked
   const b = m.signal_bars || 0;
   bars.forEach(bar => bar.classList.toggle("active", Number(bar.dataset.n) <= b));
 }
@@ -418,6 +461,7 @@ freqInput.addEventListener("keydown", e => { if (e.key === "Enter") btnGo.click(
 
 // Play/pause
 btnPlay.addEventListener("click", () => {
+  _unlockAudio();
   if (isPlaying) {
     player.pause();
     setPlayState(false);

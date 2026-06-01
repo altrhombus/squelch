@@ -135,12 +135,22 @@ html, body {
 .bar.active { background: var(--bar-on); }
 
 #stereo-indicator {
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
   color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  padding: 1px 5px;
+  border-radius: 20px;
   margin-left: 4px;
-  line-height: 1;
   align-self: center;
+  animation: stereo-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes stereo-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
 }
 
 /* =====================================================

@@ -95,6 +95,9 @@ class RadioManager:
         # Restart ffmpeg reading from FIFO
         await self._start_ffmpeg(band)
 
+        self._meta.update_state("buffering")
+        await self._meta.broadcast()
+
         if not self._signal_task or self._signal_task.done():
             self._signal_task = asyncio.create_task(self._signal_loop())
 
@@ -327,6 +330,7 @@ class RadioManager:
 
                 if not hls_announced and os.path.exists(m3u8_path):
                     hls_announced = True
+                    self._meta.update_state("live")
                     logger.info("HLS stream ready: %s", m3u8_path)
                     await self._meta.broadcast_event("hls_ready")
 
@@ -338,13 +342,14 @@ class RadioManager:
             pass
 
     def _estimate_signal_bars(self) -> int:
-        # Placeholder: 3 bars when any backend is alive, 0 otherwise.
-        # A real implementation would parse rtl_fm gain output or use
-        # osmosdr's get_sensor("rssi") via GNU Radio.
-        if self._gnu_radio is not None:
-            return 3
+        if self._meta.state not in ("buffering", "live"):
+            return 0
+        if self._nrsc5 is not None and self._nrsc5.is_running():
+            return 5 if self._meta.hd_locked else 2
         if self._rtl_fm is not None and self._rtl_fm.is_running():
             return 3
-        if self._nrsc5 is not None and self._nrsc5.is_running():
-            return 4 if self._meta.hd_locked else 2
+        if self._gnu_radio is not None:
+            # Receiving RDS station name means the signal is strong enough for
+            # data decoding — bump to 4. HD lock would be 5 (handled above).
+            return 4 if self._meta.station_name else 3
         return 0

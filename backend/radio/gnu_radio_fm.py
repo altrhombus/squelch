@@ -5,7 +5,8 @@ Requires: gnuradio, gr-osmosdr, gr-rds
   sudo apt-get install gnuradio gr-osmosdr gr-rds
 
 Audio pipeline:  osmosdr.source → wbfm_receive → file_sink(FIFO)
-RDS pipeline:    FM demod → rds.decoder → rds.parser → Python message callback
+RDS pipeline:    FM demod → rds.bpsk_demod → rds.decoder → rds.parser
+                 → _RdsMsgBridge (Python block) → callback
 """
 
 import logging
@@ -217,7 +218,12 @@ class GnuRadioFM:
             tb.connect(rds_bpsk, rds_decoder);    stream_connections.append((rds_bpsk, rds_decoder))
 
             tb.msg_connect(rds_decoder, "out", rds_parser, "in")
-            rds_parser.set_msg_handler("out", lambda msg: self._handle_rds_msg(msg))
+
+            # C++ blocks can't have Python callbacks set directly.
+            # Bridge the parser's output port to a Python block that calls our callback.
+            bridge = _RdsMsgBridge(self._on_rds_pmt)
+            tb.msg_connect(rds_parser, "out", bridge, "in")
+            tb._rds_bridge = bridge  # keep a reference so GC doesn't collect it
             logger.info("gr-rds connected")
 
         except Exception as e:
@@ -229,21 +235,17 @@ class GnuRadioFM:
                 except Exception:
                     pass
 
-    def _handle_rds_msg(self, msg):
+    def _on_rds_pmt(self, data):
+        """Called by _RdsMsgBridge when an RDS PMT message arrives."""
         if not self._rds_callback:
             return
         try:
-            import pmt
-            d = pmt.to_python(msg)
-            if isinstance(d, dict):
-                self._rds_callback({
-                    "ps": d.get("ps", ""),
-                    "rt": d.get("rt", ""),
-                    "pty": _rds_pty_name(d.get("pty", 0)),
-                    "pi": d.get("pi", ""),
-                })
+            update = _parse_rds_pmt(data)
+            if any(update.values()):
+                logger.debug("RDS: %s", update)
+                self._rds_callback(update)
         except Exception as e:
-            logger.debug("RDS message parse error: %s", e)
+            logger.debug("RDS parse error: %s", e)
 
     def _stop_flowgraph(self):
         self._running = False
@@ -259,6 +261,72 @@ class GnuRadioFM:
             # next flowgraph tries to claim the device, causing error -6.
             import gc
             gc.collect()
+
+
+class _RdsMsgBridge:
+    """
+    A minimal GNU Radio Python block that receives PMT messages from rds.parser
+    and dispatches them to a Python callback.
+
+    C++ GNU Radio blocks cannot have Python callbacks attached directly; this
+    bridge block registers a message input port and calls our handler.
+    """
+
+    def __new__(cls, callback):
+        # Defer the import so this module loads without gnuradio installed.
+        from gnuradio import gr
+        import pmt
+
+        class _Bridge(gr.basic_block):
+            def __init__(self, cb):
+                gr.basic_block.__init__(
+                    self, "_RdsMsgBridge",
+                    gr.io_signature(0, 0, 0),
+                    gr.io_signature(0, 0, 0),
+                )
+                self.message_port_register_in(pmt.intern("in"))
+                self.set_msg_handler(pmt.intern("in"), self._handle)
+                self._cb = cb
+
+            def _handle(self, msg):
+                try:
+                    import pmt as _pmt
+                    self._cb(_pmt.to_python(msg))
+                except Exception:
+                    pass
+
+        return _Bridge(callback)
+
+
+def _parse_rds_pmt(data) -> dict:
+    """Convert a PMT-to-Python value from rds.parser into a normalised dict.
+
+    gr-rds versions vary: some emit a single dict per group, others emit
+    (key, value) pairs.  We handle both and try common key spellings.
+    """
+    if isinstance(data, dict):
+        d = {str(k).lower(): v for k, v in data.items()}
+    elif isinstance(data, (list, tuple)) and len(data) == 2:
+        d = {str(data[0]).lower(): data[1]}
+    else:
+        return {}
+
+    def _get(d, *keys):
+        for k in keys:
+            if k in d:
+                return str(d[k]).strip() or None
+        return None
+
+    ps  = _get(d, "ps", "program_service_name", "programservicename")
+    rt  = _get(d, "rt", "radiotext", "radio_text")
+    pi  = _get(d, "pi", "program_id", "programid")
+    pty_raw = d.get("pty") or d.get("program_type") or d.get("programtype")
+    try:
+        pty = _rds_pty_name(int(pty_raw)) if pty_raw is not None else ""
+    except (ValueError, TypeError):
+        pty = str(pty_raw).strip()
+
+    return {"ps": ps or "", "rt": rt or "", "pty": pty, "pi": pi or ""}
 
 
 # RDS PTY codes (RBDS — North America)

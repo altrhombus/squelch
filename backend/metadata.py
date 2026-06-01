@@ -27,6 +27,8 @@ class MetadataState:
         self.hd_locked: bool = False
         self.stereo: bool = False
         self.has_art: bool = False
+        # lifecycle state pushed to the frontend for status display
+        self.state: str = "idle"           # idle | tuning | buffering | live
         self._last_history_key: Optional[str] = None
         self._websockets: set[WebSocket] = set()
 
@@ -45,6 +47,7 @@ class MetadataState:
             "stereo": self.stereo,
             "has_art": self.has_art,
             "art_url": "/art/current.jpg" if self.has_art else None,
+            "state": self.state,
         }
 
     def update_tune(self, frequency: float, band: str):
@@ -59,7 +62,11 @@ class MetadataState:
         self.hd_locked = False
         self.stereo = False
         self.has_art = False
+        self.state = "tuning"
         self._clear_art()
+
+    def update_state(self, state: str):
+        self.state = state
 
     def update_rds(self, ps: str = None, rt: str = None, pty: str = None, pi: str = None):
         changed = False
