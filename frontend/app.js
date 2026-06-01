@@ -19,6 +19,10 @@ let _prevHasArt = false;
 let _prevArtUrl = "";
 let _prevHdLocked = false;
 
+// History auto-refresh — re-fetch after a track change so the list stays live
+let _prevTrackKey = "";
+let _historyRefreshTimer = null;
+
 // ---------------------------------------------------------------------------
 // Elements
 // ---------------------------------------------------------------------------
@@ -309,6 +313,15 @@ function applyMeta(m) {
     }[m.state] || "";
     elTrackInfo.textContent = hint;
     elTrackInfo.classList.add("muted");
+  }
+
+  // Refresh history list when track changes, with a short delay to let the
+  // backend finish its DB write before we fetch.
+  const trackKey = `${m.artist || ""}|${m.title || ""}`;
+  if (trackKey !== _prevTrackKey && (m.artist || m.title)) {
+    _prevTrackKey = trackKey;
+    clearTimeout(_historyRefreshTimer);
+    _historyRefreshTimer = setTimeout(loadHistory, 1500);
   }
 
   // Cover art — crossfade only when has_art or art_url changes
