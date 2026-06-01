@@ -160,18 +160,8 @@ class RadioManager:
                 await asyncio.sleep(1)
                 bars, stereo = self._estimate_signal()
                 self._meta.update_signal(bars, stereo)
-                if self._pipeline:
-                    m = self._pipeline.signal_metrics
-                    m["band"] = self._current_band
-                    self._meta.diag = m
-                elif self._nrsc5 and self._nrsc5.is_running():
-                    self._meta.diag = {"band": "hd", "hd_locked": self._meta.hd_locked}
-                else:
-                    self._meta.diag = {}
 
                 # Only push a WebSocket frame when user-visible state changed.
-                # Floating-point diag metrics update every tick but don't need
-                # to wake every connected client when signal is stable.
                 cur = (bars, stereo, self._meta.state)
                 if cur != _prev:
                     _prev = cur
@@ -183,11 +173,11 @@ class RadioManager:
         """
         Returns (signal_bars 0-5, stereo_active).
 
-        FM: pilot RMS → bars + stereo blend detection.
-          pilot_rms ≈ 0.07 on a good signal (pilot is 10% of deviation,
-          RMS of sine ≈ A/√2).  Blend kicks in below 0.08; full mono below 0.02.
+        Bars reflect IQ RMS — the actual RF/antenna signal level, analogous
+        to RSSI on a phone.  The gain controller keeps iq_rms in [0.07, 0.38]
+        for a receivable station, so thresholds are calibrated around that range.
 
-        AM/scanner: fixed 3 bars when running (no pilot to measure).
+        Stereo is driven separately by pilot_rms (19 kHz stereo pilot tone).
         HD: 5 if locked, 2 if decoding.
         """
         if self._meta.state not in ("buffering", "live"):
@@ -197,18 +187,16 @@ class RadioManager:
             return (5 if self._meta.hd_locked else 2), False
 
         if self._pipeline:
-            q = self._pipeline.signal_quality   # 0.0–1.0 (pilot RMS for FM)
-            if self._current_band == "fm":
-                # Map pilot RMS to 1–5 bars
-                if   q > 0.08: bars = 5
-                elif q > 0.05: bars = 4
-                elif q > 0.02: bars = 3
-                elif q > 0.005: bars = 2
-                else:          bars = 1
-                # Stereo badge: pilot strong enough for meaningful separation
-                stereo = q > 0.05
-                return bars, stereo
-            else:
-                return 3, False   # AM/scanner: running = 3 bars, always mono
+            iq = self._pipeline.signal_strength   # IQ RMS — RF level at the antenna
+            if   iq > 0.28: bars = 5
+            elif iq > 0.15: bars = 4
+            elif iq > 0.08: bars = 3
+            elif iq > 0.04: bars = 2
+            else:           bars = 1
+
+            # Stereo badge uses pilot_rms — only meaningful for FM
+            stereo = (self._current_band == "fm"
+                      and self._pipeline.signal_quality > 0.05)
+            return bars, stereo
 
         return 0, False

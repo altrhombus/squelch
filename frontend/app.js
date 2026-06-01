@@ -338,9 +338,6 @@ function applyMeta(m) {
   // Stereo indicator
   toggleEl(elStereo, m.stereo);
 
-  // Diagnostics panel
-  if (m.diag) applyDiag(m.diag, m.band);
-
   // Signal bars — update aria-label with human-readable strength
   const b = m.signal_bars || 0;
   const signalLabels = ["no signal", "poor", "weak", "fair", "good", "excellent"];
@@ -351,101 +348,6 @@ function applyMeta(m) {
 
 function toggleEl(el, show) {
   el.classList.toggle("hidden", !show);
-}
-
-// ---------------------------------------------------------------------------
-// Diagnostics panel
-// ---------------------------------------------------------------------------
-
-let _lastDiag = {};
-
-function applyDiag(d, band) {
-  _lastDiag = { ...d, band };
-
-  setDiagMeter("iq", d.iq_rms ?? 0, 0.7,
-    v => v > 0.45 ? "weak" : v > 0.1 ? "good" : "fair",
-    v => v.toFixed(3));
-
-  const compRow = document.getElementById("diag-comp-row");
-  if (compRow) compRow.style.display = (band === "fm" || !band) ? "" : "none";
-  setDiagMeter("comp", d.composite_rms ?? 0, 0.6,
-    v => v > 0.2 ? "good" : v > 0.05 ? "fair" : "weak",
-    v => v.toFixed(3));
-
-  const pilotRow = document.getElementById("diag-pilot-row");
-  if (pilotRow) pilotRow.style.display = (band === "fm" || !band) ? "" : "none";
-  setDiagMeter("pilot", d.pilot_rms ?? 0, 0.10,
-    v => v > 0.06 ? "good" : v > 0.02 ? "fair" : "weak",
-    v => v.toFixed(4));
-
-  const noiseRow = document.getElementById("diag-noise-row");
-  if (noiseRow) noiseRow.style.display = (band === "fm" || !band) ? "" : "none";
-  setDiagMeter("noise", d.noise_rms ?? 0, 0.10,
-    v => v < 0.02 ? "good" : v < 0.05 ? "fair" : "weak",
-    v => v.toFixed(4));
-
-  const blendRow = document.getElementById("diag-blend-row");
-  if (blendRow) blendRow.style.display = (band === "fm" || !band) ? "" : "none";
-  setDiagMeter("blend", d.blend ?? 0, 1.0,
-    v => v > 0.6 ? "good" : v > 0.2 ? "fair" : "weak",
-    v => Math.round(v * 100) + "%");
-
-  setDiagMeter("audio", d.audio_rms ?? 0, 0.5,
-    v => v > 0.05 && v < 0.45 ? "good" : v >= 0.45 ? "weak" : "fair",
-    v => v.toFixed(3));
-
-  const gainRow = document.getElementById("diag-gain-row");
-  if (gainRow) {
-    const hasGain = d.gain_db != null;
-    gainRow.style.display = (hasGain && (band === "fm" || !band)) ? "" : "none";
-    if (hasGain) {
-      setDiagMeter("gain", d.gain_db, 50,
-        v => v <= 35 ? "good" : v <= 42 ? "fair" : "weak",
-        v => v.toFixed(1) + " dB");
-    }
-  }
-}
-
-function setDiagMeter(id, value, maxVal, colorFn, labelFn) {
-  const bar = document.getElementById(`diag-${id}-bar`);
-  const val = document.getElementById(`diag-${id}-val`);
-  if (!bar || !val) return;
-  const pct = Math.min(100, (value / maxVal) * 100);
-  bar.style.width = pct + "%";
-  bar.className = "diag-fill " + colorFn(value);
-  val.textContent = value > 0 ? labelFn(value) : "—";
-}
-
-document.getElementById("btn-copy-diag")?.addEventListener("click", () => {
-  const info = {
-    timestamp: new Date().toISOString(),
-    frequency: currentFreq,
-    band: currentBand,
-    ...(_lastDiag || {}),
-  };
-  const text = JSON.stringify(info, null, 2);
-  const btn = document.getElementById("btn-copy-diag");
-  const orig = btn.textContent;
-  const finish = () => {
-    btn.textContent = "Copied!";
-    setTimeout(() => btn.textContent = orig, 1500);
-  };
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(text).then(finish).catch(() => fallbackCopy(text, finish));
-  } else {
-    fallbackCopy(text, finish);
-  }
-});
-
-function fallbackCopy(text, done) {
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
-  document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
-  try { document.execCommand("copy"); done(); } catch (_) {}
-  document.body.removeChild(ta);
 }
 
 // ---------------------------------------------------------------------------

@@ -165,9 +165,9 @@ class FmStereoDemodulator:
     DEMOD_RATE  = _DEMOD_RATE
     AUDIO_RATE  = _AUDIO_RATE
 
-    # Per-block metrics — read by pipeline.py for the diagnostics panel.
+    # Per-block metrics — read by pipeline.py for signal strength and stereo detection.
     last_pilot_rms:    float = 0.0
-    last_iq_rms:       float = 0.0   # raw ADC signal power
+    last_iq_rms:       float = 0.0   # raw ADC signal power (RF level)
     last_composite_rms: float = 0.0  # FM discriminator output
     last_noise_rms:    float = 0.0   # discriminator noise floor (65-90 kHz band)
     last_blend:        float = 0.0   # stereo blend factor 0-1

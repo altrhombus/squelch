@@ -275,31 +275,20 @@ class RadioPipeline:
         return None
 
     @property
+    def signal_strength(self) -> float:
+        """IQ RMS of the last received block — direct measure of RF/antenna signal level."""
+        if self._demod is not None:
+            return float(getattr(self._demod, "last_iq_rms", 0.0))
+        return 0.0
+
+    @property
     def signal_quality(self) -> float:
-        """0.0–1.0 signal quality estimate (pilot RMS for FM, 0.3 when running for AM)."""
+        """Pilot RMS for FM (used for stereo detection); 0.3 when running for AM/scanner."""
         if self._band == "fm" and self._demod is not None:
             return float(getattr(self._demod, "last_pilot_rms", 0.0))
         if self._demod is not None:
             return 0.3
         return 0.0
-
-    @property
-    def signal_metrics(self) -> dict:
-        """Detailed per-block metrics for the diagnostics panel."""
-        d = self._demod
-        if d is None:
-            return {}
-        m = {
-            "iq_rms":        round(float(getattr(d, "last_iq_rms",        0.0)), 4),
-            "composite_rms": round(float(getattr(d, "last_composite_rms", 0.0)), 4),
-            "pilot_rms":     round(float(getattr(d, "last_pilot_rms",     0.0)), 4),
-            "noise_rms":     round(float(getattr(d, "last_noise_rms",     0.0)), 4),
-            "blend":         round(float(getattr(d, "last_blend",         0.0)), 3),
-            "audio_rms":     round(float(getattr(d, "last_audio_rms",     0.0)), 4),
-        }
-        if self._current_gain is not None:
-            m["gain_db"] = round(self._current_gain, 1)
-        return m
 
     def _make_demod(self, band: str, freq_hz: float, deemphasis_us: int, stereo_mode: str = "auto"):
         if band == "fm":
