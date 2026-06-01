@@ -299,6 +299,18 @@ function applyDiag(d, band) {
   setDiagMeter("audio", d.audio_rms ?? 0, 0.5,
     v => v > 0.05 && v < 0.45 ? "good" : v >= 0.45 ? "weak" : "fair",
     v => v.toFixed(3));
+
+  // Gain: 0-50 dB range; only shown for FM with software gain control
+  const gainRow = document.getElementById("diag-gain-row");
+  if (gainRow) {
+    const hasGain = d.gain_db != null;
+    gainRow.style.display = (hasGain && (band === "fm" || !band)) ? "" : "none";
+    if (hasGain) {
+      setDiagMeter("gain", d.gain_db, 50,
+        v => v <= 35 ? "good" : v <= 42 ? "fair" : "weak",
+        v => v.toFixed(1) + " dB");
+    }
+  }
 }
 
 function setDiagMeter(id, value, maxVal, colorFn, labelFn) {
@@ -311,7 +323,9 @@ function setDiagMeter(id, value, maxVal, colorFn, labelFn) {
   val.textContent = value > 0 ? labelFn(value) : "—";
 }
 
-// Copy debug info to clipboard
+// Copy debug info to clipboard.
+// navigator.clipboard requires HTTPS or localhost; fall back to a hidden
+// textarea + execCommand so this works over plain HTTP on a local Pi.
 document.getElementById("btn-copy-diag")?.addEventListener("click", () => {
   const info = {
     timestamp: new Date().toISOString(),
@@ -319,14 +333,32 @@ document.getElementById("btn-copy-diag")?.addEventListener("click", () => {
     band: currentBand,
     ...(_lastDiag || {}),
   };
-  navigator.clipboard?.writeText(JSON.stringify(info, null, 2))
-    .then(() => {
-      const btn = document.getElementById("btn-copy-diag");
-      const orig = btn.textContent;
-      btn.textContent = "Copied!";
-      setTimeout(() => btn.textContent = orig, 1500);
-    });
+  const text = JSON.stringify(info, null, 2);
+  const btn = document.getElementById("btn-copy-diag");
+  const orig = btn.textContent;
+
+  const finish = () => {
+    btn.textContent = "Copied!";
+    setTimeout(() => btn.textContent = orig, 1500);
+  };
+
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(finish).catch(() => fallbackCopy(text, finish));
+  } else {
+    fallbackCopy(text, finish);
+  }
 });
+
+function fallbackCopy(text, done) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try { document.execCommand("copy"); done(); } catch (_) {}
+  document.body.removeChild(ta);
+}
 
 // ---------------------------------------------------------------------------
 // Generic API helper
