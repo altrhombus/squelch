@@ -70,7 +70,7 @@ class FmStereoDemodulator:
     last_blend:        float = 0.0   # stereo blend factor 0-1
     last_audio_rms:    float = 0.0   # decoded output level
 
-    def __init__(self, deemphasis_us: int = 75):
+    def __init__(self, deemphasis_us: int = 75, stereo_mode: str = "auto"):
         # --- audio bandpass/lowpass filter coefficients (SOS) ---
         # Wide LPF at 15 kHz: full FM audio bandwidth for strong signals.
         # Narrow LPF at 8 kHz: used on weak signals to remove HF hiss while
@@ -115,6 +115,8 @@ class FmStereoDemodulator:
         self._dc_sos   = butter(2, 5, 'highpass', fs=_AUDIO_RATE, output='sos')
         self._dc_l_zi  = _zero_zi(self._dc_sos)
         self._dc_r_zi  = _zero_zi(self._dc_sos)
+
+        self._stereo_mode = stereo_mode   # "auto" | "force" | "mono"
 
         # --- blend smoothing state ---
         # Asymmetric time constants: fast attack (falling blend → protect ears
@@ -210,7 +212,16 @@ class FmStereoDemodulator:
 
         pilot_gate = float(np.clip((pilot_rms - 0.02) / 0.06, 0.0, 1.0))
         iq_gate    = float(np.clip((iq_rms    - 0.05) / 0.15, 0.0, 1.0))
-        blend_raw  = pilot_gate * iq_gate * noise_gate
+
+        if self._stereo_mode == "mono":
+            blend_raw = 0.0
+        elif self._stereo_mode == "force":
+            # Bypass noise and IQ gates; stereo if the station broadcasts a
+            # pilot, regardless of signal quality.  Expect more hiss on weak
+            # signals — this is the user's explicit choice.
+            blend_raw = pilot_gate
+        else:
+            blend_raw = pilot_gate * iq_gate * noise_gate
 
         # Smooth blend with asymmetric time constants to prevent block-edge
         # clicks and flicker on marginal signals.
@@ -239,14 +250,17 @@ class FmStereoDemodulator:
         l32 = l.astype(np.float32)
         r32 = r.astype(np.float32)
 
-        # 10. Slow audio AGC + soft-knee limiter.
-        #     Target 0.12 RMS leaves ~18 dB of headroom before the soft knee
-        #     (0.85) engages, covering the typical FM broadcast crest factor
-        #     of 12-15 dB without distortion.  The previous 0.25 target was
-        #     pushing peaks into hard clipping, causing the harsh buzz on
-        #     transients and high-pitched voices (audio_rms ≈ 0.48 observed).
+        # 10. Asymmetric audio AGC + soft-knee limiter.
+        #     Fast attack (α=0.3, τ≈240 ms): quickly pull gain down when loud
+        #     content resumes after a quiet passage — prevents the 5-second
+        #     distorted surge that occurred with symmetric slow AGC.
+        #     Slow release (α=0.005, τ≈22 s): gain barely rises during a
+        #     10-second break (+1.5 dB), so the noise floor stays quiet and
+        #     there is little overshoot when the next song hits.
         rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
-        self._agc_gain += 0.02 * (0.12 / rms - self._agc_gain)
+        target_gain = 0.12 / rms
+        alpha = 0.3 if target_gain < self._agc_gain else 0.005
+        self._agc_gain += alpha * (target_gain - self._agc_gain)
         self._agc_gain = float(np.clip(self._agc_gain, 0.1, 10.0))
         l32 = _soft_limit((l32 * self._agc_gain).astype(np.float64)).astype(np.float32)
         r32 = _soft_limit((r32 * self._agc_gain).astype(np.float64)).astype(np.float32)

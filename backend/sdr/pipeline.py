@@ -70,11 +70,11 @@ class RadioPipeline:
     # Public API
     # ------------------------------------------------------------------
 
-    async def start(self, freq_hz: float, band: str, gain="auto", deemphasis_us: int = 75):
+    async def start(self, freq_hz: float, band: str, gain="auto", deemphasis_us: int = 75, stereo_mode: str = "auto"):
         await self.stop()
         self._band = band
         self._freq = freq_hz
-        self._demod = self._make_demod(band, freq_hz, deemphasis_us)
+        self._demod = self._make_demod(band, freq_hz, deemphasis_us, stereo_mode)
 
         if band == "fm":
             self._rds = RdsDecoder(self._on_rds)
@@ -268,9 +268,9 @@ class RadioPipeline:
             m["gain_db"] = round(self._current_gain, 1)
         return m
 
-    def _make_demod(self, band: str, freq_hz: float, deemphasis_us: int):
+    def _make_demod(self, band: str, freq_hz: float, deemphasis_us: int, stereo_mode: str = "auto"):
         if band == "fm":
-            return FmStereoDemodulator(deemphasis_us=deemphasis_us)
+            return FmStereoDemodulator(deemphasis_us=deemphasis_us, stereo_mode=stereo_mode)
         elif band == "scanner" and _AVIATION_LO <= freq_hz <= _AVIATION_HI:
             return AmDemodulator()
         elif band == "scanner":

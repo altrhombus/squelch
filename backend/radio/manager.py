@@ -53,8 +53,9 @@ class RadioManager:
         pass  # nothing to pre-create
 
     async def tune(self, freq_hz: float, band: str, **kwargs):
-        gain      = kwargs.get("gain", self._cfg.get("sdr", {}).get("gain", "auto"))
-        deemph    = kwargs.get("deemphasis_us", self._deemphasis)
+        gain         = kwargs.get("gain", self._cfg.get("sdr", {}).get("gain", "auto"))
+        deemph       = kwargs.get("deemphasis_us", self._deemphasis)
+        stereo_mode  = kwargs.get("stereo_mode", "auto")
 
         self._meta.update_tune(freq_hz, band)
         await self._meta.broadcast()
@@ -68,7 +69,7 @@ class RadioManager:
         if band == "hd":
             await self._start_hd(freq_hz)
         else:
-            await self._start_pipeline(freq_hz, band, gain, deemph)
+            await self._start_pipeline(freq_hz, band, gain, deemph, stereo_mode)
 
         self._meta.update_state("buffering")
         await self._meta.broadcast()
@@ -112,10 +113,10 @@ class RadioManager:
     # Internal
     # ------------------------------------------------------------------
 
-    async def _start_pipeline(self, freq_hz: float, band: str, gain, deemph: int):
+    async def _start_pipeline(self, freq_hz: float, band: str, gain, deemph: int, stereo_mode: str = "auto"):
         from ..sdr.pipeline import RadioPipeline
         self._pipeline = RadioPipeline(self._cfg, self._meta, self._streams)
-        await self._pipeline.start(freq_hz, band, gain=gain, deemphasis_us=deemph)
+        await self._pipeline.start(freq_hz, band, gain=gain, deemphasis_us=deemph, stereo_mode=stereo_mode)
 
     async def _start_hd(self, freq_hz: float):
         encoder = AacEncoder(stereo=True)
