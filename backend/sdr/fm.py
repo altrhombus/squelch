@@ -36,6 +36,23 @@ def _zero_zi(sos: np.ndarray) -> np.ndarray:
     return np.zeros((sos.shape[0], 2), dtype=np.float64)
 
 
+_LIMITER_KNEE = 0.85   # soft-knee starts here; converges to ±1.0 above
+
+def _soft_limit(x: np.ndarray) -> np.ndarray:
+    """
+    Soft-knee limiter: linear below the knee, tanh rolloff above.
+    Avoids the harsh high-frequency harmonics that a hard np.clip creates
+    on audio transients and high-pitched voices.
+    """
+    abs_x = np.abs(x)
+    over  = abs_x > _LIMITER_KNEE
+    x     = x.copy()
+    k     = 1.0 - _LIMITER_KNEE
+    x[over] = (np.sign(x[over])
+               * (_LIMITER_KNEE + k * np.tanh((abs_x[over] - _LIMITER_KNEE) / k)))
+    return x.clip(-1.0, 1.0)
+
+
 class FmStereoDemodulator:
     """
     Stateful FM stereo demodulator. Call process() once per IQ block.
@@ -222,14 +239,17 @@ class FmStereoDemodulator:
         l32 = l.astype(np.float32)
         r32 = r.astype(np.float32)
 
-        # 10. Slow audio AGC: normalise perceived loudness across stations.
-        #     α=0.02 → τ≈5 s — slow enough to avoid pumping.
-        #     Gain is clamped to 0.1–10× to prevent runaway on silence.
+        # 10. Slow audio AGC + soft-knee limiter.
+        #     Target 0.12 RMS leaves ~18 dB of headroom before the soft knee
+        #     (0.85) engages, covering the typical FM broadcast crest factor
+        #     of 12-15 dB without distortion.  The previous 0.25 target was
+        #     pushing peaks into hard clipping, causing the harsh buzz on
+        #     transients and high-pitched voices (audio_rms ≈ 0.48 observed).
         rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
-        self._agc_gain += 0.02 * (0.25 / rms - self._agc_gain)
+        self._agc_gain += 0.02 * (0.12 / rms - self._agc_gain)
         self._agc_gain = float(np.clip(self._agc_gain, 0.1, 10.0))
-        l32 = np.clip(l32 * self._agc_gain, -1.0, 1.0).astype(np.float32)
-        r32 = np.clip(r32 * self._agc_gain, -1.0, 1.0).astype(np.float32)
+        l32 = _soft_limit((l32 * self._agc_gain).astype(np.float64)).astype(np.float32)
+        r32 = _soft_limit((r32 * self._agc_gain).astype(np.float64)).astype(np.float32)
 
         self.last_audio_rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2))
         return l32, r32, composite.astype(np.float32)
