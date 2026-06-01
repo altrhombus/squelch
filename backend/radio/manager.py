@@ -15,6 +15,8 @@ import logging
 import os
 from typing import Optional
 
+from scipy.signal import resample_poly
+
 from ..metadata import MetadataState
 from ..streaming import StreamingManager, AacEncoder
 from .nrsc5_backend import Nrsc5Backend
@@ -123,10 +125,11 @@ class RadioManager:
 
         def pcm_cb(pcm_l: object, pcm_r: object):
             import numpy as np
-            chunk = encoder.encode(
-                np.asarray(pcm_l, dtype=np.float32),
-                np.asarray(pcm_r, dtype=np.float32),
-            )
+            # nrsc5 outputs 44100 Hz; resample to 48000 Hz (ratio 160/147) so the
+            # AacEncoder (initialized at 48000 Hz) gets correctly-timed samples.
+            l = resample_poly(np.asarray(pcm_l, np.float32), 160, 147).astype(np.float32)
+            r = resample_poly(np.asarray(pcm_r, np.float32), 160, 147).astype(np.float32)
+            chunk = encoder.encode(l, r)
             if chunk:
                 self._streams.broadcast(chunk)
 

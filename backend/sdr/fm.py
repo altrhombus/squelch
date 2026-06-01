@@ -54,20 +54,23 @@ class FmStereoDemodulator:
 
     def __init__(self, deemphasis_us: int = 75):
         # --- audio bandpass/lowpass filter coefficients (SOS) ---
-        # 8th-order LPF at 15 kHz: passes the full FM audio band (-3 dB at
-        # 15 kHz) while providing ~26 dB attenuation at 19 kHz to reject
-        # pilot bleed.  The previous 6th-order at 14.5 kHz was attenuating
-        # the top octave slightly, making the audio sound dull.
-        self._lpr_sos     = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
-        self._pilot_sos   = butter(4, [17_000, 21_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
-        self._lmr_sos     = butter(4, [23_000, 53_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
-        self._lmr_lp_sos  = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        # Wide LPF at 15 kHz: full FM audio bandwidth for strong signals.
+        # Narrow LPF at 8 kHz: used on weak signals to remove HF hiss while
+        # preserving speech/music intelligibility.  The two paths are blended
+        # by the stereo-blend factor so bandwidth narrows continuously as the
+        # signal weakens (same technique used in hardware FM tuner ICs).
+        self._lpr_sos        = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        self._lpr_narrow_sos = butter(8,  8_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        self._pilot_sos      = butter(4, [17_000, 21_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
+        self._lmr_sos        = butter(4, [23_000, 53_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
+        self._lmr_lp_sos     = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
 
         # --- per-block filter states ---
-        self._lpr_zi      = _zero_zi(self._lpr_sos)
-        self._pilot_zi    = _zero_zi(self._pilot_sos)
-        self._lmr_zi      = _zero_zi(self._lmr_sos)
-        self._lmr_lp_zi   = _zero_zi(self._lmr_lp_sos)
+        self._lpr_zi         = _zero_zi(self._lpr_sos)
+        self._lpr_narrow_zi  = _zero_zi(self._lpr_narrow_sos)
+        self._pilot_zi       = _zero_zi(self._pilot_sos)
+        self._lmr_zi         = _zero_zi(self._lmr_sos)
+        self._lmr_lp_zi      = _zero_zi(self._lmr_lp_sos)
 
         # --- de-emphasis IIR (first-order) ---
         dt    = 1.0 / _AUDIO_RATE
@@ -77,6 +80,18 @@ class FmStereoDemodulator:
         self._de_a     = np.array([1.0, -(1-alpha)], dtype=np.float64)
         self._de_l_zi  = np.zeros(1)
         self._de_r_zi  = np.zeros(1)
+
+        # --- blend smoothing state ---
+        # Asymmetric time constants: fast attack (falling blend → protect ears
+        # from noise burst) and slow release (rising blend → avoid flicker on
+        # marginal signals).  At ~109 ms/block: α=0.3 → τ≈250 ms fall,
+        # α=0.05 → τ≈1.5 s rise.
+        self._blend_smooth = 0.0
+
+        # --- audio AGC state ---
+        # Very slow update (α=0.02 → τ≈5 s) prevents pumping artefacts.
+        # Gain clamped to 0.1–10× to avoid runaway on silence or clipping.
+        self._agc_gain = 1.0
 
     def process(self, iq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -94,9 +109,13 @@ class FmStereoDemodulator:
         z = demod_iq[1:] * np.conj(demod_iq[:-1])
         composite = (np.angle(z) * (_DEMOD_RATE / (2.0 * np.pi * _MAX_DEV))).astype(np.float64)
 
-        # 3. L+R: lowpass 15 kHz + decimate ×5 → 48 kHz
-        lpr_full, self._lpr_zi = sosfilt(self._lpr_sos, composite, zi=self._lpr_zi)
-        lpr = lpr_full[::_AUDIO_DECIM].astype(np.float32)
+        # 3. L+R: two parallel paths — wide (15 kHz) and narrow (8 kHz).
+        #    The narrow path removes HF hiss on weak signals; they are blended
+        #    below once the blend factor has been computed.
+        lpr_full,        self._lpr_zi        = sosfilt(self._lpr_sos,        composite, zi=self._lpr_zi)
+        lpr_narrow_full, self._lpr_narrow_zi = sosfilt(self._lpr_narrow_sos, composite, zi=self._lpr_narrow_zi)
+        lpr_wide   = lpr_full[::_AUDIO_DECIM].astype(np.float32)
+        lpr_narrow = lpr_narrow_full[::_AUDIO_DECIM].astype(np.float32)
 
         # 4. Pilot: BPF 17–21 kHz for carrier generation
         pilot, self._pilot_zi = sosfilt(self._pilot_sos, composite, zi=self._pilot_zi)
@@ -117,39 +136,37 @@ class FmStereoDemodulator:
         lmr_full, self._lmr_lp_zi = sosfilt(self._lmr_lp_sos, lmr_demod, zi=self._lmr_lp_zi)
         lmr = lmr_full[::_AUDIO_DECIM].astype(np.float32)
 
-        # 8. Stereo blend based on pilot RMS.
-        #    Hard switching causes an abrupt noise burst on weak signals.
-        #    Soft blend smoothly fades L-R contribution as pilot weakens.
+        # 8. Stereo blend based on pilot RMS and raw IQ signal strength.
         #
         #    Typical pilot RMS on a good FM signal ≈ 0.07 (pilot is 10% of
         #    total deviation; RMS of sine = A/√2).
         #
-        #    blend = 0 (mono) below pilot_rms 0.02, = 1 (full stereo) above 0.08.
+        #    Empirical thresholds from three-station test:
+        #      91.7  IQ 0.062 → iq_gate≈0.08  → blend≈ 8% (near-mono)
+        #      88.9  IQ 0.088 → iq_gate≈0.25  → blend≈18%
+        #      102.9 IQ 0.282 → iq_gate≈1.0   → blend≈77% (full stereo)
         pilot_rms = float(np.sqrt(np.mean(pilot ** 2)))
         iq_rms    = float(np.sqrt(np.mean(np.abs(iq) ** 2)))
-        self.last_pilot_rms    = pilot_rms
-        self.last_iq_rms       = iq_rms
+        self.last_pilot_rms     = pilot_rms
+        self.last_iq_rms        = iq_rms
         self.last_composite_rms = float(np.sqrt(np.mean(composite ** 2)))
 
-        # Stereo blend gated by BOTH pilot presence AND raw signal strength.
-        #
-        # The FM discriminator normalises by deviation, so pilot_rms is roughly
-        # the same (~0.07) on a strong or weak signal — it only tells us the
-        # station *broadcasts* stereo, not whether the signal is clean enough
-        # to demodulate L-R without adding noise.
-        #
-        # iq_rms reflects the actual received signal power at the ADC.  Gating
-        # on it prevents 100% stereo blend on weak signals where the L-R
-        # subcarrier SNR is poor, which was the source of the 91.7 hiss.
-        #
-        # Empirical thresholds from three-station test:
-        #   91.7  IQ 0.062 → iq_gate≈0.08  → blend≈ 8% (near-mono, quiet)
-        #   88.9  IQ 0.088 → iq_gate≈0.25  → blend≈18%
-        #   102.9 IQ 0.282 → iq_gate≈1.0   → blend≈77% (full stereo)
         pilot_gate = float(np.clip((pilot_rms - 0.02) / 0.06, 0.0, 1.0))
         iq_gate    = float(np.clip((iq_rms    - 0.05) / 0.15, 0.0, 1.0))
-        blend      = pilot_gate * iq_gate
+        blend_raw  = pilot_gate * iq_gate
+
+        # Smooth blend with asymmetric time constants to prevent block-edge
+        # clicks and flicker on marginal signals.
+        alpha = 0.3 if blend_raw < self._blend_smooth else 0.05
+        self._blend_smooth += alpha * (blend_raw - self._blend_smooth)
+        blend = self._blend_smooth
         self.last_blend = blend
+
+        # Adaptive audio bandwidth: blend wide (15 kHz) and narrow (8 kHz)
+        # L+R paths proportionally to signal strength.  On weak signals the
+        # high-frequency path carries mainly discriminator noise; this removes
+        # it while preserving speech/music intelligibility.
+        lpr = (lpr_wide * blend + lpr_narrow * (1.0 - blend)).astype(np.float32)
 
         l = (lpr + lmr * blend).astype(np.float32)
         r = (lpr - lmr * blend).astype(np.float32)
@@ -160,5 +177,15 @@ class FmStereoDemodulator:
 
         l32 = l.astype(np.float32)
         r32 = r.astype(np.float32)
+
+        # 10. Slow audio AGC: normalise perceived loudness across stations.
+        #     α=0.02 → τ≈5 s — slow enough to avoid pumping on dynamic
+        #     content.  Gain is clamped to 0.1–10× to prevent runaway.
+        rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
+        self._agc_gain += 0.02 * (0.25 / rms - self._agc_gain)
+        self._agc_gain = float(np.clip(self._agc_gain, 0.1, 10.0))
+        l32 = np.clip(l32 * self._agc_gain, -1.0, 1.0).astype(np.float32)
+        r32 = np.clip(r32 * self._agc_gain, -1.0, 1.0).astype(np.float32)
+
         self.last_audio_rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2))
         return l32, r32, composite.astype(np.float32)

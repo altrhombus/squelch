@@ -29,6 +29,8 @@ class AmDemodulator:
     SAMPLE_RATE = _SAMPLE_RATE
     AUDIO_RATE  = _AUDIO_RATE
 
+    last_iq_rms: float = 0.0   # read by pipeline.py for squelch
+
     def __init__(self):
         # DC blocker: highpass at 30 Hz (removes envelope offset)
         self._dc_sos = butter(2, 30, 'highpass', fs=_AUDIO_RATE, output='sos')
@@ -36,6 +38,8 @@ class AmDemodulator:
         self._gain   = 1.0
 
     def process(self, iq: np.ndarray) -> np.ndarray:
+        self.last_iq_rms = float(np.sqrt(np.mean(np.abs(iq) ** 2)))
+
         decimated = resample_poly(iq, 1, _DECIM)
 
         # AM envelope
@@ -44,10 +48,15 @@ class AmDemodulator:
         # DC removal
         env, self._dc_zi = sosfilt(self._dc_sos, env, zi=self._dc_zi)
 
-        # Soft AGC: normalise so RMS ≈ 0.25
+        # Asymmetric AGC: fast attack (loud signal) / slow release (quiet).
+        # Prevents clipping on sudden loud carriers while avoiding pumping
+        # artefacts on voice.
         rms = float(np.sqrt(np.mean(env ** 2))) + 1e-10
-        target = 0.25
-        self._gain = 0.95 * self._gain + 0.05 * (target / rms)
+        target_gain = 0.25 / rms
+        if target_gain < self._gain:
+            self._gain = 0.5 * self._gain + 0.5 * target_gain   # fast attack
+        else:
+            self._gain = 0.97 * self._gain + 0.03 * target_gain  # slow release
         env = (env * self._gain).clip(-1.0, 1.0)
 
         return env.astype(np.float32)
@@ -61,6 +70,8 @@ class NfmDemodulator:
     SAMPLE_RATE = _SAMPLE_RATE
     AUDIO_RATE  = _AUDIO_RATE
 
+    last_iq_rms: float = 0.0   # read by pipeline.py for squelch
+
     def __init__(self):
         # Audio lowpass 4 kHz to suppress inter-channel noise
         self._lp_sos = butter(4, 4_000, 'lowpass', fs=_AUDIO_RATE, output='sos')
@@ -68,17 +79,23 @@ class NfmDemodulator:
         self._gain   = 1.0
 
     def process(self, iq: np.ndarray) -> np.ndarray:
+        self.last_iq_rms = float(np.sqrt(np.mean(np.abs(iq) ** 2)))
+
         decimated = resample_poly(iq, 1, _DECIM)
 
         # FM discriminator
         z     = decimated[1:] * np.conj(decimated[:-1])
         audio = (np.angle(z) * (_AUDIO_RATE / (2.0 * np.pi * _NFM_DEV))).astype(np.float64)
 
-        # Lowpass + AGC
+        # Lowpass + asymmetric AGC
         audio, self._lp_zi = sosfilt(self._lp_sos, audio, zi=self._lp_zi)
 
         rms = float(np.sqrt(np.mean(audio ** 2))) + 1e-10
-        self._gain = 0.95 * self._gain + 0.05 * (0.25 / rms)
+        target_gain = 0.25 / rms
+        if target_gain < self._gain:
+            self._gain = 0.5 * self._gain + 0.5 * target_gain   # fast attack
+        else:
+            self._gain = 0.97 * self._gain + 0.03 * target_gain  # slow release
         audio = (audio * self._gain).clip(-1.0, 1.0)
 
         return audio.astype(np.float32)
