@@ -146,17 +146,42 @@ class RadioManager:
         try:
             while True:
                 await asyncio.sleep(1)
-                bars = self._estimate_bars()
-                self._meta.update_signal(bars, stereo=(self._current_band == "fm"))
+                bars, stereo = self._estimate_signal()
+                self._meta.update_signal(bars, stereo)
                 await self._meta.broadcast()
         except asyncio.CancelledError:
             pass
 
-    def _estimate_bars(self) -> int:
+    def _estimate_signal(self) -> tuple[int, bool]:
+        """
+        Returns (signal_bars 0-5, stereo_active).
+
+        FM: pilot RMS → bars + stereo blend detection.
+          pilot_rms ≈ 0.07 on a good signal (pilot is 10% of deviation,
+          RMS of sine ≈ A/√2).  Blend kicks in below 0.08; full mono below 0.02.
+
+        AM/scanner: fixed 3 bars when running (no pilot to measure).
+        HD: 5 if locked, 2 if decoding.
+        """
         if self._meta.state not in ("buffering", "live"):
-            return 0
+            return 0, False
+
         if self._nrsc5 and self._nrsc5.is_running():
-            return 5 if self._meta.hd_locked else 2
+            return (5 if self._meta.hd_locked else 2), False
+
         if self._pipeline:
-            return 4 if self._meta.station_name else 3
-        return 0
+            q = self._pipeline.signal_quality   # 0.0–1.0 (pilot RMS for FM)
+            if self._current_band == "fm":
+                # Map pilot RMS to 1–5 bars
+                if   q > 0.08: bars = 5
+                elif q > 0.05: bars = 4
+                elif q > 0.02: bars = 3
+                elif q > 0.005: bars = 2
+                else:          bars = 1
+                # Stereo badge: pilot strong enough for meaningful separation
+                stereo = q > 0.05
+                return bars, stereo
+            else:
+                return 3, False   # AM/scanner: running = 3 bars, always mono
+
+        return 0, False

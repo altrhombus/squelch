@@ -40,12 +40,17 @@ class FmStereoDemodulator:
     DEMOD_RATE  = _DEMOD_RATE
     AUDIO_RATE  = _AUDIO_RATE
 
+    # Pilot RMS from the most recent block — used externally for signal bars.
+    last_pilot_rms: float = 0.0
+
     def __init__(self, deemphasis_us: int = 75):
         # --- filter coefficients (computed once) ---
-        self._lpr_sos     = butter(4, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        # 6th-order LPF at 14.5 kHz gives ~20 dB attenuation at 19 kHz
+        # (vs ~9 dB for 4th-order at 15 kHz), eliminating pilot bleed.
+        self._lpr_sos     = butter(6, 14_500,              'lowpass',  fs=_DEMOD_RATE, output='sos')
         self._pilot_sos   = butter(4, [17_000, 21_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_sos     = butter(4, [23_000, 53_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
-        self._lmr_lp_sos  = butter(4, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        self._lmr_lp_sos  = butter(6, 14_500,              'lowpass',  fs=_DEMOD_RATE, output='sos')
 
         # --- per-block filter states ---
         self._lpr_zi      = _zero_zi(self._lpr_sos)
@@ -97,16 +102,21 @@ class FmStereoDemodulator:
         lmr_full, self._lmr_lp_zi = sosfilt(self._lmr_lp_sos, lmr_demod, zi=self._lmr_lp_zi)
         lmr = lmr_full[::_AUDIO_DECIM].astype(np.float32)
 
-        # 8. Stereo / mono decision based on pilot power.
-        #    Do NOT halve after the matrix — the /2 was reducing output to
-        #    ~25% of full scale. L+R and L-R signals each occupy a fraction
-        #    of the total FM deviation, so the sum L = (L+R)+(L-R) is already
-        #    well within ±1.0 for a normal broadcast.
-        if np.mean(pilot ** 2) > 1e-4:
-            l = (lpr + lmr).astype(np.float32)
-            r = (lpr - lmr).astype(np.float32)
-        else:
-            l = r = lpr.astype(np.float32)
+        # 8. Stereo blend based on pilot RMS.
+        #    Hard switching causes an abrupt noise burst on weak signals.
+        #    Soft blend smoothly fades L-R to zero as the pilot weakens,
+        #    which is the same technique used in car radios and GNU Radio's
+        #    wbfm_receive stereo_threshold parameter.
+        #
+        #    Typical pilot RMS on a good FM signal ≈ 0.07 (pilot is 10% of
+        #    total deviation; RMS of sine = A/√2).
+        #    blend = 0 (mono) below 0.02, = 1 (full stereo) above 0.08.
+        pilot_rms = float(np.sqrt(np.mean(pilot ** 2)))
+        self.last_pilot_rms = pilot_rms
+        blend = float(np.clip((pilot_rms - 0.02) / 0.06, 0.0, 1.0))
+
+        l = (lpr + lmr * blend).astype(np.float32)
+        r = (lpr - lmr * blend).astype(np.float32)
 
         # 9. De-emphasis
         l, self._de_l_zi = lfilter(self._de_b, self._de_a, l, zi=self._de_l_zi)

@@ -182,6 +182,18 @@ class RadioPipeline:
             logger.debug("DSP error: %s", e)
         return None
 
+    @property
+    def signal_quality(self) -> float:
+        """
+        0.0–1.0 signal quality estimate.
+        FM: pilot RMS (proxy for SNR). AM/scanner: 0.3 when running.
+        """
+        if self._band == "fm" and self._demod is not None:
+            return float(getattr(self._demod, "last_pilot_rms", 0.0))
+        if self._demod is not None:
+            return 0.3
+        return 0.0
+
     def _make_demod(self, band: str, freq_hz: float, deemphasis_us: int):
         if band == "fm":
             return FmStereoDemodulator(deemphasis_us=deemphasis_us)
