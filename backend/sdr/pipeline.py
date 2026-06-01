@@ -26,13 +26,18 @@ _AM_BLOCK = 65_536      # IQ samples per read at 1.2 MHz (≈ 55 ms)
 
 # RTL-SDR / R820T2 software gain control for FM.
 # Hardware "auto" AGC targets ADC headroom, not FM SNR.  Above ~35 dB the
-# LNA noise figure degrades faster than the gain helps, so the optimal
-# operating point is typically 28-32 dB.  We start there and only step
-# up/down to keep the IQ RMS inside a safe ADC range.
-_FM_GAIN_START   = 30.0   # dB — starting point; closest available gain used
-_IQ_RMS_LO       = 0.10   # below this: signal too weak, step gain up
-_IQ_RMS_HI       = 0.38   # above this: ADC approaching saturation, step down
-_GAIN_HOLD_BLOCKS = 50    # minimum blocks between gain steps (~5 s at 109 ms/block)
+# LNA noise figure degrades faster than the gain helps (especially when a
+# pre-amp is present and already provides sufficient low-noise amplification).
+# Two criteria drive the controller:
+#   Level-based: keep IQ RMS in [_IQ_RMS_LO, _IQ_RMS_HI]
+#   Quality-based: step DOWN if noise_rms/pilot_rms > _NOISE_RATIO_MAX
+#                  (more gain is worsening FM SNR, not improving it)
+_FM_GAIN_START    = 30.0   # dB — starting point; closest available gain used
+_IQ_RMS_LO        = 0.07   # below this: signal too weak, step up (was 0.10 — too
+                            # aggressive; caused overshoot past SNR optimum)
+_IQ_RMS_HI        = 0.38   # above this: ADC saturation risk, step down
+_NOISE_RATIO_MAX  = 2.0    # noise_rms/pilot_rms above this: step down for quality
+_GAIN_HOLD_BLOCKS = 50     # minimum blocks between gain steps (~5 s at 109 ms/block)
 
 # Aviation band uses AM demodulation even though it's a "scanner" band
 _AVIATION_LO = 118e6
@@ -186,18 +191,32 @@ class RadioPipeline:
                     hold_blocks += 1
                     if hold_blocks >= _GAIN_HOLD_BLOCKS:
                         hold_blocks = 0
-                        iq_rms = self._demod.last_iq_rms
+                        iq_rms      = self._demod.last_iq_rms
+                        pilot_rms   = getattr(self._demod, "last_pilot_rms", 0.0)
+                        noise_rms   = getattr(self._demod, "last_noise_rms",  0.0)
+                        noise_ratio = noise_rms / (pilot_rms + 1e-6)
+
                         if iq_rms > _IQ_RMS_HI and g_idx > 0:
+                            # ADC saturation risk
                             g_idx -= 1
                             sdr.gain = avail_gains[g_idx]
                             self._current_gain = avail_gains[g_idx]
-                            logger.info("FM gain stepped down to %.1f dB (iq_rms=%.3f)",
+                            logger.info("FM gain ↓ %.1f dB (iq_rms=%.3f, ADC headroom)",
                                         avail_gains[g_idx], iq_rms)
+                        elif noise_ratio > _NOISE_RATIO_MAX and iq_rms > _IQ_RMS_LO and g_idx > 0:
+                            # More gain is worsening FM SNR (pre-amp overshoot or
+                            # chip noise figure degrading above optimum)
+                            g_idx -= 1
+                            sdr.gain = avail_gains[g_idx]
+                            self._current_gain = avail_gains[g_idx]
+                            logger.info("FM gain ↓ %.1f dB (noise_ratio=%.2f, quality)",
+                                        avail_gains[g_idx], noise_ratio)
                         elif iq_rms < _IQ_RMS_LO and g_idx < len(avail_gains) - 1:
+                            # Signal too weak
                             g_idx += 1
                             sdr.gain = avail_gains[g_idx]
                             self._current_gain = avail_gains[g_idx]
-                            logger.info("FM gain stepped up to %.1f dB (iq_rms=%.3f)",
+                            logger.info("FM gain ↑ %.1f dB (iq_rms=%.3f, weak signal)",
                                         avail_gains[g_idx], iq_rms)
         except asyncio.CancelledError:
             raise
