@@ -255,25 +255,20 @@ class FmStereoDemodulator:
 
     def __init__(self, deemphasis_us: int = 75, stereo_mode: str = "auto"):
         # --- audio bandpass/lowpass filter coefficients (SOS) ---
-        # Wide LPF at 15 kHz: full FM audio bandwidth for strong signals.
-        # Narrow LPF at 8 kHz: used on weak signals to remove HF hiss while
-        # preserving speech/music intelligibility.  The two paths are blended
-        # by the stereo-blend factor so bandwidth narrows continuously as the
-        # signal weakens (same technique used in hardware FM tuner ICs).
+        # Single L+R path at full 15 kHz FM bandwidth.  A blended narrow path
+        # (8 kHz) was previously used to reduce HF hiss on weak signals; the
+        # Wiener filter now handles that pre-de-emphasis with better SNR estimates,
+        # so the narrow path was discarding real programme content unnecessarily.
         self._lpr_sos        = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
-        # Narrow path at 8 kHz.  Used at blend=0 on noisy stations to reduce
-        # discriminator noise while preserving basic audio fidelity.  4 kHz
-        # ("telephone") proved too restrictive — music became unintelligible.
-        self._lpr_narrow_sos = butter(8,  8_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
         self._pilot_sos      = butter(4, [17_000, 21_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_sos        = butter(4, [23_000, 53_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_lp_sos     = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
-        # Narrow L-R path at 8 kHz — mirrors the L+R adaptive bandwidth logic.
-        # On noisy signals the 8-15 kHz L-R content is mostly discriminator
-        # noise, not program stereo.  Blending toward narrow when noise_gate is
-        # low directly reduces the "ssss" hiss character without touching the
-        # L+R mono channel or affecting clean stations (noise_gate ≈ 1).
-        self._lmr_narr_sos   = butter(8,  8_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
+        # Narrow L-R path at 11 kHz (was 8 kHz).  Blended toward this on weak
+        # signals to prevent phantom stereo images and the "swishing" artefact
+        # caused by discriminator noise in the 11-15 kHz L-R band.  The Wiener
+        # filter handles 8-11 kHz L-R noise; the top octave (11-15 kHz) is the
+        # residual where stereo content is absent on marginal signals.
+        self._lmr_narr_sos   = butter(8, 11_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
         # Above FM program content (L+R 0-15k, pilot 19k, L-R 23-53k, RDS 57k)
         # and below Nyquist (120k): this band contains only discriminator noise.
         # Its RMS is a direct measure of FM SNR and drives the noise gate.
@@ -281,7 +276,6 @@ class FmStereoDemodulator:
 
         # --- per-block filter states ---
         self._lpr_zi         = _zero_zi(self._lpr_sos)
-        self._lpr_narrow_zi  = _zero_zi(self._lpr_narrow_sos)
         self._pilot_zi       = _zero_zi(self._pilot_sos)
         self._lmr_zi         = _zero_zi(self._lmr_sos)
         self._lmr_lp_zi      = _zero_zi(self._lmr_lp_sos)
@@ -381,13 +375,10 @@ class FmStereoDemodulator:
             _xi            = np.where(~_ck)[0]
             composite[_ck] = np.interp(np.where(_ck)[0], _xi, composite[_xi])
 
-        # 3. L+R: two parallel paths — wide (15 kHz) and narrow (8 kHz).
-        #    The narrow path removes HF hiss on weak signals; they are blended
-        #    below once the blend factor has been computed.
-        lpr_full,        self._lpr_zi        = sosfilt(self._lpr_sos,        composite, zi=self._lpr_zi)
-        lpr_narrow_full, self._lpr_narrow_zi = sosfilt(self._lpr_narrow_sos, composite, zi=self._lpr_narrow_zi)
-        lpr_wide   = lpr_full[::_AUDIO_DECIM].astype(np.float32)
-        lpr_narrow = lpr_narrow_full[::_AUDIO_DECIM].astype(np.float32)
+        # 3. L+R: single 15 kHz path — full FM audio bandwidth.
+        #    HF noise on weak signals is handled by the Wiener filter (step 9).
+        lpr_full, self._lpr_zi = sosfilt(self._lpr_sos, composite, zi=self._lpr_zi)
+        lpr_wide = lpr_full[::_AUDIO_DECIM].astype(np.float32)
 
         # 4. Pilot: BPF 17–21 kHz for carrier generation
         pilot, self._pilot_zi = sosfilt(self._pilot_sos, composite, zi=self._pilot_zi)
@@ -469,14 +460,14 @@ class FmStereoDemodulator:
         blend = self._blend_smooth
         self.last_blend = blend
 
-        # Adaptive L+R bandwidth: blend wide (15 kHz) and narrow (8 kHz)
-        # proportionally to signal strength.
-        lpr = (lpr_wide * blend + lpr_narrow * (1.0 - blend)).astype(np.float32)
+        lpr = lpr_wide
 
-        # Adaptive L-R bandwidth: same principle applied to the stereo channel.
-        # At noise_gate=1 (clean): full 15 kHz L-R separation.
-        # At noise_gate=0 (noisy): 8 kHz L-R — the 8-15 kHz L-R band on a
-        # marginal signal is mostly discriminator noise, not program stereo.
+        # Adaptive L-R bandwidth: blend toward 11 kHz on weak signals.
+        # At noise_gate=1 (clean): full 15 kHz stereo separation.
+        # At noise_gate=0 (noisy): 11 kHz — prevents phantom stereo images and
+        # the "swishing" artefact from discriminator noise in the 11-15 kHz L-R
+        # band.  The Wiener filter handles 8-11 kHz L-R noise; only the top
+        # octave where real stereo content is absent is blended out here.
         lmr = (lmr_wide * noise_gate + lmr_narr * (1.0 - noise_gate)).astype(np.float32)
 
         l = (lpr + lmr * blend).astype(np.float32)
