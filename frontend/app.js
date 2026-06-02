@@ -644,7 +644,12 @@ async function clearHistory() {
 
 function timeAgo(dateStr) {
   if (!dateStr) return "";
-  const diff = (Date.now() - new Date(dateStr).getTime()) / 1000;
+  // SQLite CURRENT_TIMESTAMP produces "2024-01-15 15:30:00" — UTC but no
+  // timezone suffix. new Date() would parse the space-separated form as
+  // local time, putting it hours in the future and making diff negative.
+  // Rewrite to ISO 8601 with explicit Z so it is always read as UTC.
+  const iso = dateStr.includes("T") ? dateStr : dateStr.replace(" ", "T") + "Z";
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
   if (diff < 60) return "just now";
   if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
