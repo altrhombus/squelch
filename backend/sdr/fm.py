@@ -118,11 +118,11 @@ class _SpectralSubtractor:
     """
 
     def __init__(self, n_fft: int = 1024, hop: int = 512,
-                 alpha_dd: float = 0.92,
+                 alpha_dd: float = 0.88,
                  noise_alpha: float = 0.9):
         self._n_fft       = n_fft
         self._hop         = hop
-        self._alpha_dd    = alpha_dd     # decision-directed SNR smoother; τ ≈ 250 ms at 48 kHz/512-hop
+        self._alpha_dd    = alpha_dd     # decision-directed SNR smoother; τ ≈ 160 ms at 48 kHz/512-hop
         self._noise_alpha = noise_alpha  # EMA smoothing for silence-gated noise PSD
 
         self._win         = np.sqrt(np.hanning(n_fft)).astype(np.float64)
