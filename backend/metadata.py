@@ -52,6 +52,11 @@ class MetadataState:
         }
 
     def update_tune(self, frequency: float, band: str):
+        # Cancel any pending debounced history/art save from the previous station
+        if self._history_save_task and not self._history_save_task.done():
+            self._history_save_task.cancel()
+        self._history_save_task = None
+
         self.frequency = frequency
         self.band = band
         self.station_name = None
@@ -189,6 +194,21 @@ class MetadataState:
         try:
             await asyncio.sleep(4)
             await self.save_history()
+            # For bands without native art (FM, AM, scanner), look up artwork
+            # from iTunes using the now-stable artist and title.
+            if (not self.has_art
+                    and self.band in ("fm", "am", "scanner")
+                    and self.artist
+                    and self.title):
+                from .art_lookup import fetch_itunes_art
+                art_path = await fetch_itunes_art(self.artist, self.title)
+                if art_path:
+                    try:
+                        shutil.copy2(art_path, ART_PATH)
+                        self.has_art = True
+                        await self.broadcast()
+                    except OSError as exc:
+                        logger.warning("Failed to copy iTunes art: %s", exc)
         except asyncio.CancelledError:
             pass
 
