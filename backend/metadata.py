@@ -232,10 +232,25 @@ class MetadataState:
 
 
 def _parse_rt(rt: str) -> tuple[Optional[str], Optional[str]]:
-    """Split RDS RadioText into (artist, title) when separated by ' - '."""
+    """Split RDS RadioText into (artist, title).
+
+    Supports two separator formats:
+      "Artist - Title"   →  dash separator, split on first ' - '
+      "Title by Artist"  →  'by' separator, split on last ' by ' so that
+                            a 'by' inside the title (e.g. "Stand By Me by
+                            Ben E. King") lands correctly. Requires the
+                            artist portion to be ≥ 3 chars to avoid
+                            misreading "Stand By Me" as artist="Me".
+    """
     if " - " in rt:
         parts = rt.split(" - ", 1)
         return parts[0].strip() or None, parts[1].strip() or None
+    idx = rt.lower().rfind(" by ")
+    if idx != -1:
+        title  = rt[:idx].strip()
+        artist = rt[idx + 4:].strip()
+        if len(artist) >= 3:
+            return artist or None, title or None
     return None, rt or None
 
 
