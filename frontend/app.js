@@ -14,12 +14,13 @@ let isRecording = false;
 let ws = null;
 let wsReconnectTimer = null;
 
-// Art state — track raw URL to avoid re-triggering crossfade on same art
+// Art / metadata state
 let _prevHasArt = false;
 let _prevArtUrl = "";
 let _prevHdLocked = false;
+let _currentAppleMusicUrl = null;
 
-// History auto-refresh — re-fetch after a track change so the list stays live
+// History auto-refresh
 let _prevTrackKey = "";
 let _historyRefreshTimer = null;
 
@@ -49,16 +50,10 @@ const elTrackInfo     = document.getElementById("track-info");
 const elArt           = document.getElementById("art");
 const artBack         = document.getElementById("art-back");
 const artBlurBg       = document.getElementById("art-blur-bg");
+const elArtWrap       = document.getElementById("art-wrap");
 const elHdBadge       = document.getElementById("hd-badge");
 const elPtyBadge      = document.getElementById("pty-badge");
-const elStereo        = document.getElementById("stereo-indicator");
 const bars            = document.querySelectorAll(".bar");
-
-const selStereo    = document.getElementById("sel-stereo");
-const selBandwidth = document.getElementById("sel-bandwidth");
-const selGain      = document.getElementById("sel-gain");
-const inputSquelch = document.getElementById("input-squelch");
-const squelchVal   = document.getElementById("squelch-val");
 
 const modalPreset     = document.getElementById("modal-preset");
 const presetNameInput = document.getElementById("preset-name-input");
@@ -88,10 +83,6 @@ function setBand(band) {
   freqInput.min = r.min;
   freqInput.max = r.max;
   freqInput.placeholder = `${r.min}–${r.max} ${r.unit}`;
-
-  // Quality drawer — only meaningful for FM/HD
-  const isAudio = (band === "fm" || band === "hd");
-  document.getElementById("quality-drawer").style.display = isAudio ? "" : "none";
 
   buildDialTicks(r);
   setFreq(clamp(currentFreq, r.min, r.max));
@@ -141,8 +132,8 @@ async function tune(freq, band) {
   const res = await api("POST", "/tune", {
     frequency: freq,
     band: band,
-    gain: selGain.value,
-    stereo_mode: selStereo.value,
+    gain: "auto",
+    stereo_mode: "auto",
   });
 
   if (res.error) {
@@ -192,6 +183,7 @@ function setupStepButton(btn, direction) {
 
   btn.addEventListener("pointerdown", (e) => {
     e.preventDefault();
+    stepOne(); // immediate first step on every tap
     holdTimer = setTimeout(() => {
       holdInterval = setInterval(stepOne, 130);
     }, 450);
@@ -209,7 +201,6 @@ function setupStepButton(btn, direction) {
   btn.addEventListener("pointercancel", () => { clearTimeout(holdTimer); clearInterval(holdInterval); });
   btn.addEventListener("pointerleave", () => { clearTimeout(holdTimer); clearInterval(holdInterval); });
 
-  // Keyboard: Enter/Space trigger a single step
   btn.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); stepOne(); tune(currentFreq); }
   });
@@ -248,11 +239,8 @@ function updateArt(rawUrl) {
   const hasNewArt = rawUrl !== "/static/placeholder.svg";
   const src = hasNewArt ? rawUrl + "?t=" + Date.now() : "/static/placeholder.svg";
 
-  // Capture the outgoing image on the back layer
   artBack.src = elArt.src || "/static/placeholder.svg";
   elArt.style.opacity = "0";
-
-  // Update blur background immediately (blurred so timing doesn't matter)
   artBlurBg.style.backgroundImage = hasNewArt ? `url("${src}")` : "none";
 
   const img = new Image();
@@ -273,7 +261,7 @@ function updateArt(rawUrl) {
 // ---------------------------------------------------------------------------
 
 function applyMeta(m) {
-  // Station name — fall back to frequency when RDS hasn't delivered a name yet
+  // Station name
   if (m.station_name) {
     elStationName.textContent = m.station_name;
     document.title = m.station_name + " — Squelch";
@@ -297,7 +285,7 @@ function applyMeta(m) {
     elStationSlogan.classList.add("hidden");
   }
 
-  // Track info line — shows state progress when there's no RDS track data
+  // Track info line
   if (m.artist && m.title) {
     elTrackInfo.textContent = `${m.artist} — ${m.title}`;
     elTrackInfo.classList.remove("muted");
@@ -315,8 +303,7 @@ function applyMeta(m) {
     elTrackInfo.classList.add("muted");
   }
 
-  // Refresh history list when track changes, with a short delay to let the
-  // backend finish its DB write before we fetch.
+  // History auto-refresh when track changes
   const trackKey = `${m.artist || ""}|${m.title || ""}`;
   if (trackKey !== _prevTrackKey && (m.artist || m.title)) {
     _prevTrackKey = trackKey;
@@ -331,6 +318,10 @@ function applyMeta(m) {
     _prevArtUrl = m.art_url || "";
     updateArt(nowHasArt ? m.art_url : "/static/placeholder.svg");
   }
+
+  // Apple Music link on album art
+  _currentAppleMusicUrl = m.apple_music_url || null;
+  updateArtLink(m);
 
   // HD badge with lock-in pulse animation
   if (m.hd_locked && !_prevHdLocked) {
@@ -348,10 +339,7 @@ function applyMeta(m) {
     elPtyBadge.classList.add("hidden");
   }
 
-  // Stereo indicator
-  toggleEl(elStereo, m.stereo);
-
-  // Signal bars — update aria-label and tooltip text
+  // Signal bars
   const b = m.signal_bars || 0;
   const signalLabels = ["No signal", "Poor", "Weak", "Fair", "Good", "Excellent"];
   const signalLabel = signalLabels[b] || "No signal";
@@ -361,10 +349,124 @@ function applyMeta(m) {
     signalMeter.dataset.signalLabel = signalLabel;
   }
   bars.forEach(bar => bar.classList.toggle("active", Number(bar.dataset.n) <= b));
+
+  // Diagnostics panel (elements may not exist in HTML — null-safe)
+  if (m.diag) applyDiag(m.diag, m.band);
+}
+
+function updateArtLink(m) {
+  // Prefer the direct Apple Music URL from the iTunes lookup.
+  // Fall back to an Apple Music search URL when artist+title are available.
+  let url = _currentAppleMusicUrl;
+  if (!url && m.artist && m.title) {
+    url = `https://music.apple.com/search?term=${encodeURIComponent(m.artist + " " + m.title)}`;
+  }
+  if (url) {
+    elArtWrap.classList.add("has-link");
+    elArtWrap.onclick = () => window.open(url, "_blank", "noopener");
+  } else {
+    elArtWrap.classList.remove("has-link");
+    elArtWrap.onclick = null;
+  }
 }
 
 function toggleEl(el, show) {
   el.classList.toggle("hidden", !show);
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics panel (null-safe — elements may be absent from HTML)
+// ---------------------------------------------------------------------------
+
+let _lastDiag = {};
+
+function applyDiag(d, band) {
+  _lastDiag = { ...d, band };
+
+  setDiagMeter("iq", d.iq_rms ?? 0, 0.7,
+    v => v > 0.45 ? "weak" : v > 0.1 ? "good" : "fair",
+    v => v.toFixed(3));
+
+  const compRow = document.getElementById("diag-comp-row");
+  if (compRow) compRow.style.display = (band === "fm" || !band) ? "" : "none";
+  setDiagMeter("comp", d.composite_rms ?? 0, 0.6,
+    v => v > 0.2 ? "good" : v > 0.05 ? "fair" : "weak",
+    v => v.toFixed(3));
+
+  const pilotRow = document.getElementById("diag-pilot-row");
+  if (pilotRow) pilotRow.style.display = (band === "fm" || !band) ? "" : "none";
+  setDiagMeter("pilot", d.pilot_rms ?? 0, 0.10,
+    v => v > 0.06 ? "good" : v > 0.02 ? "fair" : "weak",
+    v => v.toFixed(4));
+
+  const noiseRow = document.getElementById("diag-noise-row");
+  if (noiseRow) noiseRow.style.display = (band === "fm" || !band) ? "" : "none";
+  setDiagMeter("noise", d.noise_rms ?? 0, 0.10,
+    v => v < 0.02 ? "good" : v < 0.05 ? "fair" : "weak",
+    v => v.toFixed(4));
+
+  const blendRow = document.getElementById("diag-blend-row");
+  if (blendRow) blendRow.style.display = (band === "fm" || !band) ? "" : "none";
+  setDiagMeter("blend", d.blend ?? 0, 1.0,
+    v => v > 0.6 ? "good" : v > 0.2 ? "fair" : "weak",
+    v => Math.round(v * 100) + "%");
+
+  setDiagMeter("audio", d.audio_rms ?? 0, 0.5,
+    v => v > 0.05 && v < 0.45 ? "good" : v >= 0.45 ? "weak" : "fair",
+    v => v.toFixed(3));
+
+  const gainRow = document.getElementById("diag-gain-row");
+  if (gainRow) {
+    const hasGain = d.gain_db != null;
+    gainRow.style.display = (hasGain && (band === "fm" || !band)) ? "" : "none";
+    if (hasGain) {
+      setDiagMeter("gain", d.gain_db, 50,
+        v => v <= 35 ? "good" : v <= 42 ? "fair" : "weak",
+        v => v.toFixed(1) + " dB");
+    }
+  }
+}
+
+function setDiagMeter(id, value, maxVal, colorFn, labelFn) {
+  const bar = document.getElementById(`diag-${id}-bar`);
+  const val = document.getElementById(`diag-${id}-val`);
+  if (!bar || !val) return;
+  const pct = Math.min(100, (value / maxVal) * 100);
+  bar.style.width = pct + "%";
+  bar.className = "diag-fill " + colorFn(value);
+  val.textContent = value > 0 ? labelFn(value) : "—";
+}
+
+document.getElementById("btn-copy-diag")?.addEventListener("click", () => {
+  const info = {
+    timestamp: new Date().toISOString(),
+    frequency: currentFreq,
+    band: currentBand,
+    ...(_lastDiag || {}),
+  };
+  const text = JSON.stringify(info, null, 2);
+  const btn = document.getElementById("btn-copy-diag");
+  const orig = btn.textContent;
+  const finish = () => {
+    btn.textContent = "Copied!";
+    setTimeout(() => btn.textContent = orig, 1500);
+  };
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(finish).catch(() => fallbackCopy(text, finish));
+  } else {
+    fallbackCopy(text, finish);
+  }
+});
+
+function fallbackCopy(text, done) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try { document.execCommand("copy"); done(); } catch (_) {}
+  document.body.removeChild(ta);
 }
 
 // ---------------------------------------------------------------------------
@@ -426,9 +528,9 @@ async function saveCurrentPreset(name) {
     name,
     frequency: currentFreq,
     band: currentBand,
-    gain: selGain.value,
-    bandwidth: selBandwidth.value,
-    stereo_mode: selStereo.value,
+    gain: "auto",
+    bandwidth: "wide",
+    stereo_mode: "auto",
   });
   loadPresets();
 }
@@ -506,6 +608,9 @@ async function loadHistory() {
     const freq = h.band === "am"
       ? `${Math.round(h.frequency / 1e3)} kHz`
       : `${parseFloat(h.frequency / 1e6).toFixed(1)} MHz`;
+    const musicUrl = (h.artist && h.title)
+      ? `https://music.apple.com/search?term=${encodeURIComponent(h.artist + " " + h.title)}`
+      : null;
     item.innerHTML = `
       <div class="history-info">
         <span class="history-station">${esc(h.station_name || freq)}</span>
@@ -517,9 +622,10 @@ async function loadHistory() {
         <span class="history-time">${timeAgo(h.seen_at)}</span>
         <span class="history-freq">${freq} ${(h.band || "").toUpperCase()}</span>
       </div>
+      ${musicUrl ? `<a class="btn-music" href="${musicUrl}" target="_blank" rel="noopener" aria-label="Open in Apple Music" title="Open in Apple Music">♫</a>` : ""}
     `;
-    item.addEventListener("click", () => {
-      // History stores frequency in Hz (from metadata.frequency)
+    item.addEventListener("click", (e) => {
+      if (e.target.closest(".btn-music")) return;
       const tuneFreq = h.band === "am"
         ? Math.round(h.frequency / 1e3)
         : parseFloat(h.frequency / 1e6);
@@ -527,6 +633,13 @@ async function loadHistory() {
     });
     historyList.appendChild(item);
   });
+}
+
+async function clearHistory() {
+  if (confirm("Clear all history?")) {
+    await api("DELETE", "/history");
+    historyList.innerHTML = '<p class="empty-hint">Nothing heard yet</p>';
+  }
 }
 
 function timeAgo(dateStr) {
@@ -674,18 +787,8 @@ btnPresetSave.addEventListener("click", async () => {
 presetNameInput.addEventListener("keydown", e => { if (e.key === "Enter") btnPresetSave.click(); });
 modalPreset.addEventListener("click", e => { if (e.target === modalPreset) closeModal(); });
 
-// Quality controls — retune on change
-selStereo.addEventListener("change", () => {
-  if (currentFreq) api("POST", "/tune", { frequency: currentFreq, band: currentBand, gain: selGain.value, stereo_mode: selStereo.value });
-});
-selGain.addEventListener("change", () => {
-  if (currentFreq) api("POST", "/tune", { frequency: currentFreq, band: currentBand, gain: selGain.value, stereo_mode: selStereo.value });
-});
-inputSquelch.addEventListener("input", () => {
-  const v = parseInt(inputSquelch.value, 10);
-  squelchVal.textContent = v;
-  api("POST", "/squelch", { slider: v });
-});
+// Clear history
+document.getElementById("btn-clear-history")?.addEventListener("click", clearHistory);
 
 // ---------------------------------------------------------------------------
 // Init
@@ -697,7 +800,6 @@ loadPresets();
 loadRecordings();
 loadHistory();
 
-// Check if already recording (page reload during active session)
 api("GET", "/record/status").then(s => {
   if (s.recording) {
     isRecording = true;

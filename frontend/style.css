@@ -52,7 +52,7 @@ html, body {
 /* Blurred art background layer */
 #art-blur-bg {
   position: absolute;
-  inset: -24px; /* overscan prevents blur edge artifacts */
+  inset: -24px;
   background-size: cover;
   background-position: center;
   filter: blur(34px) brightness(0.32) saturate(1.7);
@@ -60,7 +60,19 @@ html, body {
   transition: background-image 0.1s;
 }
 
-/* WebSocket reconnect badge — top-right corner, visible only when disconnected */
+/* Signal strength — top-left, absolute */
+#signal-meter {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 16px;
+}
+
+/* WS reconnect badge — top-right, visible only when disconnected */
 #ws-status {
   position: absolute;
   top: 12px;
@@ -84,9 +96,7 @@ html, body {
   gap: 14px;
 }
 
-/* Art container — centered, square. Use explicit height (not aspect-ratio)
-   because aspect-ratio on a flex item can compute to 0 when the container
-   has no main-axis constraint, making overflow:hidden clip everything. */
+/* Art container — centered square */
 #art-wrap {
   position: relative;
   width: min(200px, 56vw);
@@ -96,7 +106,11 @@ html, body {
   border-radius: 10px;
   overflow: hidden;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  cursor: default;
+  transition: opacity 0.15s;
 }
+#art-wrap.has-link { cursor: pointer; }
+#art-wrap.has-link:hover { opacity: 0.88; }
 
 /* Crossfade: two stacked image layers */
 #art-back,
@@ -127,7 +141,6 @@ html, body {
   z-index: 2;
 }
 
-/* HD lock pulse animation */
 @keyframes hd-lock-pulse {
   0%   { transform: scale(1); box-shadow: 0 0 0 0 rgba(0, 122, 255, 0.5); }
   50%  { transform: scale(1.3); box-shadow: 0 0 0 8px rgba(0, 122, 255, 0); }
@@ -188,14 +201,6 @@ html, body {
 
 .muted { color: var(--muted); }
 
-#signal-meter {
-  display: flex;
-  align-items: flex-end;
-  gap: 3px;
-  height: 16px;
-  margin-top: 2px;
-}
-
 .bar {
   width: 5px;
   border-radius: 2px;
@@ -208,18 +213,6 @@ html, body {
 .bar[data-n="4"] { height: 12px; }
 .bar[data-n="5"] { height: 16px; }
 .bar.active { background: var(--bar-on); }
-
-#stereo-indicator {
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  padding: 1px 5px;
-  border-radius: 20px;
-  align-self: center;
-}
 
 /* =====================================================
    Player controls (inside hero card)
@@ -316,7 +309,6 @@ input[type="range"]:focus-visible {
   color: #fff;
 }
 
-/* Frequency row: step buttons flanking the display */
 #freq-row {
   display: flex;
   align-items: center;
@@ -394,7 +386,7 @@ input[type="range"]:focus-visible {
 #btn-go:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* =====================================================
-   Presets
+   Presets / Recordings / History — shared card pattern
    ===================================================== */
 
 #presets-section,
@@ -405,7 +397,8 @@ input[type="range"]:focus-visible {
   padding: 14px;
 }
 
-#presets-header {
+#presets-header,
+#history-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -420,7 +413,8 @@ h2 {
   color: var(--muted);
   margin-bottom: 12px;
 }
-#presets-header h2 { margin-bottom: 0; }
+#presets-header h2,
+#history-header h2 { margin-bottom: 0; }
 
 .btn-small {
   background: var(--surface2);
@@ -438,12 +432,25 @@ h2 {
 .btn-small.primary:hover { background: #c74f00; }
 
 #presets-list,
-#recordings-list,
-#history-list {
+#recordings-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
+
+/* History list is scrollable */
+#history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  /* subtle scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface2) transparent;
+}
+#history-list::-webkit-scrollbar { width: 4px; }
+#history-list::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 2px; }
 
 .preset-item,
 .recording-item {
@@ -489,7 +496,6 @@ h2 {
 .recording-name { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recording-dur { font-size: 12px; color: var(--muted); flex-shrink: 0; }
 
-/* Inline play button for recordings */
 .btn-play-rec {
   padding: 2px;
   flex-shrink: 0;
@@ -499,7 +505,7 @@ h2 {
 .empty-hint { color: var(--muted); font-size: 13px; text-align: center; padding: 12px 0; }
 
 /* =====================================================
-   History
+   History items
    ===================================================== */
 
 .history-item {
@@ -511,6 +517,8 @@ h2 {
   padding: 10px 12px;
   cursor: pointer;
   transition: background 0.15s;
+  text-decoration: none;
+  color: inherit;
 }
 .history-item:hover { background: #2e2e2e; }
 
@@ -554,17 +562,34 @@ h2 {
   color: var(--accent);
 }
 
+/* Apple Music link in history rows */
+.btn-music {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color 0.15s;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+}
+.btn-music:hover { color: var(--text); }
+
 /* =====================================================
-   Quality drawer
+   Diagnostics (power user, kept for completeness)
    ===================================================== */
 
-#quality-drawer {
+#diagnostics-drawer {
   background: var(--surface);
   border-radius: var(--radius);
   padding: 14px;
 }
-
-#quality-drawer summary {
+#diagnostics-drawer summary {
   font-size: 13px;
   font-weight: 600;
   color: var(--muted);
@@ -576,39 +601,47 @@ h2 {
   align-items: center;
   gap: 6px;
 }
-#quality-drawer summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
-#quality-drawer summary::before {
-  content: "▸";
-  transition: transform 0.2s;
-}
-#quality-drawer[open] summary::before { transform: rotate(90deg); }
+#diagnostics-drawer summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+#diagnostics-drawer summary::before { content: "▸"; transition: transform 0.2s; }
+#diagnostics-drawer[open] summary::before { transform: rotate(90deg); }
 
-.drawer-body {
+.diag-body {
+  margin-top: 12px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 12px;
+  gap: 8px;
 }
-
-.drawer-body label {
-  display: flex;
-  justify-content: space-between;
+.diag-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
   align-items: center;
-  font-size: 13px;
-  gap: 10px;
+  gap: 8px;
 }
-
-.drawer-body select {
+.diag-label { font-size: 12px; color: var(--text); white-space: nowrap; }
+.diag-hint { color: var(--muted); font-size: 10px; font-weight: 400; }
+.diag-track {
+  width: 120px; height: 6px;
   background: var(--surface2);
-  border: 1px solid #333;
-  border-radius: 6px;
-  color: var(--text);
-  padding: 4px 8px;
-  font-size: 13px;
+  border-radius: 3px;
+  overflow: hidden;
+  flex-shrink: 0;
 }
-.drawer-body select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-.drawer-body input[type="range"] { width: 120px; }
+.diag-fill {
+  height: 100%; border-radius: 3px; width: 0%;
+  transition: width 0.4s ease, background-color 0.4s ease;
+  background: var(--accent);
+}
+.diag-fill.good { background: #34c759; }
+.diag-fill.fair { background: #ff9500; }
+.diag-fill.weak { background: #ff3b30; }
+.diag-num {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  width: 46px;
+  text-align: right;
+  flex-shrink: 0;
+}
 
 /* =====================================================
    Modal
@@ -623,7 +656,6 @@ h2 {
   justify-content: center;
   z-index: 100;
 }
-
 .modal-box {
   background: var(--surface);
   border-radius: var(--radius);
@@ -634,7 +666,6 @@ h2 {
   gap: 14px;
 }
 .modal-box h3 { font-size: 16px; }
-
 .modal-box input[type="text"] {
   background: var(--surface2);
   border: 1px solid #333;
@@ -646,7 +677,6 @@ h2 {
   width: 100%;
 }
 .modal-box input[type="text"]:focus { border-color: var(--accent); }
-
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -654,13 +684,9 @@ h2 {
 }
 
 /* =====================================================
-   Utils
+   Signal tooltip
    ===================================================== */
 
-.hidden { display: none !important; }
-.badge { display: inline-block; }
-
-/* Signal strength tooltip */
 #signal-tooltip {
   position: fixed;
   background: rgba(0, 0, 0, 0.82);
@@ -678,7 +704,13 @@ h2 {
 }
 #signal-tooltip.visible { opacity: 1; }
 
-/* Visually hidden but screen-reader accessible */
+/* =====================================================
+   Utils
+   ===================================================== */
+
+.hidden { display: none !important; }
+.badge { display: inline-block; }
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -689,6 +721,49 @@ h2 {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* =====================================================
+   Responsive — two-column layout for tablet / desktop
+   ===================================================== */
+
+@media (min-width: 768px) {
+  #app {
+    max-width: 960px;
+    display: grid;
+    grid-template-columns: 380px 1fr;
+    align-items: start;
+    column-gap: var(--gap);
+  }
+
+  /* Left column: now-playing card, sticky */
+  #now-playing {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    position: sticky;
+    top: 16px;
+    align-self: start;
+  }
+
+  /* Right column: everything else */
+  #tuner-section,
+  #presets-section,
+  #recordings-section,
+  #history-section,
+  #diagnostics-drawer {
+    grid-column: 2;
+  }
+
+  /* Slightly larger art on desktop */
+  #art-wrap {
+    width: 220px;
+    height: 220px;
+  }
+
+  /* Taller scrollable history on desktop — more room available */
+  #history-list {
+    max-height: 360px;
+  }
 }
 
 /* =====================================================
@@ -706,7 +781,7 @@ h2 {
     --record-off: #999;
   }
   .btn-small, .band-tab { color: #111; }
-  #freq-input, .drawer-body select, .modal-box input[type="text"] { color: #111; }
+  #freq-input { color: #111; }
   #art-blur-bg { filter: blur(34px) brightness(1.3) saturate(0.5); opacity: 0.45; }
   .btn-icon:hover { background: rgba(0, 0, 0, 0.07); }
 }

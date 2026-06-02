@@ -14,6 +14,15 @@
     <!-- Now Playing hero (player controls live here) -->
     <header id="now-playing">
       <div id="art-blur-bg"></div>
+      <!-- Signal meter — top-left, absolute -->
+      <div id="signal-meter" role="img" aria-label="Signal: no signal">
+        <span class="bar" data-n="1"></span>
+        <span class="bar" data-n="2"></span>
+        <span class="bar" data-n="3"></span>
+        <span class="bar" data-n="4"></span>
+        <span class="bar" data-n="5"></span>
+      </div>
+      <!-- WS reconnect badge — top-right, absolute -->
       <div id="ws-status" class="hidden" title="Reconnecting…"></div>
       <div id="now-playing-content">
 
@@ -26,18 +35,10 @@
         <div id="now-info">
           <div id="meta-badges">
             <div id="pty-badge" class="badge hidden"></div>
-            <span id="stereo-indicator" class="hidden">STEREO</span>
           </div>
           <p id="station-name" aria-live="polite">Squelch</p>
           <p id="station-slogan" class="muted hidden"></p>
           <p id="track-info" class="muted" aria-live="polite">Ready to tune</p>
-          <div id="signal-meter" role="img" aria-label="Signal: no signal">
-            <span class="bar" data-n="1"></span>
-            <span class="bar" data-n="2"></span>
-            <span class="bar" data-n="3"></span>
-            <span class="bar" data-n="4"></span>
-            <span class="bar" data-n="5"></span>
-          </div>
         </div>
 
         <audio id="player" preload="none" playsinline></audio>
@@ -109,47 +110,12 @@
 
     <!-- History -->
     <section id="history-section">
-      <h2>History</h2>
+      <div id="history-header">
+        <h2>History</h2>
+        <button id="btn-clear-history" class="btn-small">Clear</button>
+      </div>
       <div id="history-list"></div>
     </section>
-
-    <!-- Signal & Quality drawer (collapsed by default) -->
-    <details id="quality-drawer">
-      <summary>Signal &amp; Quality</summary>
-      <div class="drawer-body">
-        <label>
-          Stereo mode
-          <select id="sel-stereo">
-            <option value="auto" selected>Auto blend</option>
-            <option value="stereo">Force stereo</option>
-            <option value="mono">Force mono</option>
-          </select>
-        </label>
-        <label>
-          Bandwidth
-          <select id="sel-bandwidth">
-            <option value="wide" selected>High Quality (200 kHz)</option>
-            <option value="narrow">Better Reception (130 kHz)</option>
-          </select>
-        </label>
-        <label>
-          SDR gain
-          <select id="sel-gain">
-            <option value="auto" selected>Automatic</option>
-            <option value="10">10 dB (manual)</option>
-            <option value="20">20 dB (manual)</option>
-            <option value="30">30 dB (manual)</option>
-            <option value="40">40 dB (manual)</option>
-            <option value="50">50 dB (manual)</option>
-          </select>
-        </label>
-        <label>
-          Squelch threshold
-          <input id="input-squelch" type="range" min="0" max="100" value="0" aria-label="Squelch threshold" />
-          <span id="squelch-val">0</span>
-        </label>
-      </div>
-    </details>
 
   </div><!-- #app -->
 
@@ -166,7 +132,7 @@
     </div>
   </div>
 
-  <!-- Signal strength tooltip (fixed-position to avoid hero card overflow:hidden clipping) -->
+  <!-- Signal strength tooltip -->
   <div id="signal-tooltip" role="tooltip" aria-hidden="true"></div>
 
   <!-- No hls.js needed — audio is served as a direct AAC/ADTS HTTP stream -->

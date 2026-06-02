@@ -305,6 +305,17 @@ async def get_history():
         await db.close()
 
 
+@app.delete("/history", status_code=204)
+async def clear_history():
+    from .db import get_db
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM history")
+        await db.commit()
+    finally:
+        await db.close()
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------

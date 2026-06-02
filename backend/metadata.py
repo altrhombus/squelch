@@ -27,6 +27,7 @@ class MetadataState:
         self.hd_locked: bool = False
         self.stereo: bool = False
         self.has_art: bool = False
+        self.apple_music_url: Optional[str] = None
         # lifecycle state pushed to the frontend for status display
         self.state: str = "idle"           # idle | tuning | buffering | live
         self._last_history_key: Optional[str] = None
@@ -49,6 +50,7 @@ class MetadataState:
             "stereo": self.stereo,
             "has_art": self.has_art,
             "art_url": "/art/current.jpg" if self.has_art else None,
+            "apple_music_url": self.apple_music_url,
             "state": self.state,
         }
 
@@ -69,6 +71,7 @@ class MetadataState:
         self.hd_locked = False
         self.stereo = False
         self.has_art = False
+        self.apple_music_url = None
         self._has_rtp = False
         self.state = "tuning"
         self._clear_art()
@@ -219,11 +222,12 @@ class MetadataState:
                     and self.artist
                     and self.title):
                 from .art_lookup import fetch_itunes_art
-                art_path = await fetch_itunes_art(self.artist, self.title)
-                if art_path:
+                result = await fetch_itunes_art(self.artist, self.title)
+                if result:
                     try:
-                        shutil.copy2(art_path, ART_PATH)
+                        shutil.copy2(result["art_path"], ART_PATH)
                         self.has_art = True
+                        self.apple_music_url = result.get("apple_music_url")
                         await self.broadcast()
                     except OSError as exc:
                         logger.warning("Failed to copy iTunes art: %s", exc)
@@ -232,7 +236,10 @@ class MetadataState:
 
     async def save_history(self):
         key = f"{self.artist}|{self.title}|{self.station_name}"
-        if key == self._last_history_key or not (self.artist or self.title):
+        if (key == self._last_history_key
+                or not self.station_name
+                or not self.artist
+                or not self.title):
             return
         self._last_history_key = key
         from .db import get_db
