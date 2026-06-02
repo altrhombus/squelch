@@ -20,7 +20,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 AUDIO_RATE      = 48_000
-BITRATE_STEREO  = 96_000   # 96 kbps AAC-LC ≈ quality of 128 kbps MP3
+BITRATE_STEREO  = 128_000  # 128 kbps AAC-LC; preserves 0-15 kHz FM bandwidth through encoder
 BITRATE_MONO    = 48_000   # 48 kbps mono for AM / scanner
 
 
