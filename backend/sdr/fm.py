@@ -87,22 +87,30 @@ def _soft_limit(x: np.ndarray) -> np.ndarray:
 
 class _SpectralSubtractor:
     """
-    Single-channel online spectral noise subtraction using overlap-add STFT.
+    Single-channel online spectral noise reduction using overlap-add STFT.
 
-    Noise floor is estimated by two complementary methods:
-      MinStat  — per-bin minimum power over a _MINSTAT_FRAMES circular buffer,
-                 updated every STFT frame regardless of programme content.
-                 Provides a continuous noise floor estimate even on stations
-                 with no silence pauses.
-      EMA      — exponential moving average of per-bin power, updated only
-                 when update_noise=True (AGC-detected silence).  Converges
-                 faster than MinStat on stations that have pauses; used as a
-                 refinement when available.
-    The noise estimate used is min(MinStat, EMA) when both are available,
-    so we always take the more conservative (lower) estimate.
+    Noise floor:
+      MinStat — per-bin minimum power over a _MINSTAT_FRAMES circular buffer,
+                updated every STFT frame.  Primary estimator; works even on
+                stations with no silence pauses.
+      EMA     — updated only during AGC-detected silence; converges faster
+                on stations that have pauses; used as a refinement.
+    Estimate = min(MinStat, EMA) when both are available.
 
-    Gain is computed per-bin and smoothed with a 3-bin triangular window
-    before application to eliminate "musical noise" artefacts.
+    Gain model: Ephraim-Malah (1984) decision-directed Wiener filter.
+      γ[k]  = power / noise_est           (a posteriori SNR)
+      ξ[k]  = α·G[k-1]²·γ[k-1]  +  (1-α)·max(γ[k]-1, 0)   (a priori SNR)
+      G[k]  = ξ[k] / (ξ[k]+1)            (Wiener gain ∈ [0,1))
+    The decision-directed smoother (α=0.92, τ≈250 ms) gives smooth gain
+    trajectories that eliminate both musical-noise artefacts and the
+    sibilant-onset static that a hard spectral floor produces.  Where
+    _sub_mask=0 the gain is clamped to 1 (pass-through).
+
+    A 3-bin triangular frequency smoother is applied to the gain output.
+
+    Intended to run pre-de-emphasis: the pre-emphasized FM signal has
+    +6 to +17 dB of HF boost relative to the flat discriminator noise,
+    giving reliable a priori SNR estimates across the full 0-15 kHz band.
 
     Uses sqrt-Hann analysis and synthesis windows; at 50 % overlap these
     satisfy the COLA constraint so unprocessed frames reconstruct exactly.
@@ -111,13 +119,12 @@ class _SpectralSubtractor:
     """
 
     def __init__(self, n_fft: int = 1024, hop: int = 512,
-                 over_sub: float = 0.45, floor_frac: float = 0.2,
+                 alpha_dd: float = 0.92,
                  noise_alpha: float = 0.9):
         self._n_fft       = n_fft
         self._hop         = hop
-        self._over_sub    = over_sub      # subtract this fraction of noise estimate (< 1.0 reduces musical noise)
-        self._floor_frac  = floor_frac    # floor as fraction of input amplitude (-14 dB at 0.2)
-        self._noise_alpha = noise_alpha   # EMA smoothing of noise PSD estimate
+        self._alpha_dd    = alpha_dd     # decision-directed SNR smoother; τ ≈ 250 ms at 48 kHz/512-hop
+        self._noise_alpha = noise_alpha  # EMA smoothing for silence-gated noise PSD
 
         self._win         = np.sqrt(np.hanning(n_fft)).astype(np.float64)
         self._noise_psd   = np.zeros(n_fft // 2 + 1, dtype=np.float64)
@@ -134,14 +141,16 @@ class _SpectralSubtractor:
         self._ms_frame_ctr   = _MINSTAT_UPDATE_EVERY - 1
         self._ms_min_cache   = np.zeros(_n_bins, dtype=np.float64)
 
-        # Frequency-dependent subtraction mask: full below 2 kHz, linear taper
-        # to zero at 4 kHz, nothing above.  Sibilants ('s', 'sh', 'f') have
-        # energy starting at ~3.5 kHz; the taper to zero at 4 kHz keeps the
-        # lower sibilant lobe intact.  A 6 kHz cutoff was tried but the
-        # onset/offset transition frames of sibilants received up to 15%
-        # attenuation in the 3.5-5 kHz range, producing audible static.
+        # Decision-directed Wiener state — initialised to 1 (full pass-through).
+        self._prev_gain  = np.ones(_n_bins, dtype=np.float64)
+        self._prev_gamma = np.ones(_n_bins, dtype=np.float64)
+
+        # Subtraction mask: flat 1.0 across 0-15 kHz (FM audio bandwidth),
+        # linear taper to 0 at 16 kHz.  Bins above the FM bandwidth have no
+        # programme content; forcing gain=1 there avoids erratic Wiener
+        # behaviour in those bins.
         _freqs            = np.arange(_n_bins) * (48_000.0 / n_fft)
-        self._sub_mask    = np.clip((4_000.0 - _freqs) / 2_000.0,
+        self._sub_mask    = np.clip((16_000.0 - _freqs) / 1_000.0,
                                     0.0, 1.0).astype(np.float64)
 
         self._in_q  = np.empty(0, dtype=np.float32)
@@ -186,19 +195,27 @@ class _SpectralSubtractor:
             else:
                 noise_est = min_psd
 
-            floor_p = (self._floor_frac ** 2) * power
-            clean_p = np.maximum(
-                power - self._over_sub * noise_est * self._sub_mask,
-                floor_p)
+            # Ephraim-Malah decision-directed Wiener gain.
+            # γ = a posteriori SNR; ξ = a priori SNR tracked via the previous
+            # frame's gain-adjusted SNR.  Wiener gain G = ξ/(ξ+1) ∈ [0,1).
+            gamma    = power / (noise_est + 1e-30)
+            xi       = (self._alpha_dd * self._prev_gain ** 2 * self._prev_gamma
+                        + (1.0 - self._alpha_dd) * np.maximum(gamma - 1.0, 0.0))
+            xi       = np.maximum(xi, 1e-10)
+            gain     = xi / (xi + 1.0)
 
-            # Spectral gain smoothing: 3-bin triangular average across frequency.
-            # Prevents isolated bins from passing through at full amplitude while
-            # their neighbours are attenuated — the "musical noise" chirp/bubble
-            # artefact that spectral subtraction is notorious for.
-            gain      = np.sqrt(clean_p / (power + 1e-30))
+            # 3-bin frequency smoother — catches any residual bin-by-bin
+            # chatter that the temporal decision-directed smoother misses.
             g_s       = gain.copy()
             g_s[1:-1] = 0.25 * gain[:-2] + 0.5 * gain[1:-1] + 0.25 * gain[2:]
-            X_out     = X * g_s
+
+            # Where mask=0 (above FM audio bandwidth) force gain to 1.
+            X_out = X * (self._sub_mask * g_s + (1.0 - self._sub_mask))
+
+            # Update decision-directed state with unsmoothed gain; using the
+            # smoothed version would flatten the temporal response.
+            self._prev_gain  = gain
+            self._prev_gamma = gamma
 
             frame_out                          = np.fft.irfft(X_out, n=self._n_fft) * self._win
             self._ola                         += frame_out
@@ -476,11 +493,27 @@ class FmStereoDemodulator:
         l = (lpr + lmr * blend).astype(np.float32)
         r = (lpr - lmr * blend).astype(np.float32)
 
-        # 9. De-emphasis
-        l, self._de_l_zi = lfilter(self._de_b, self._de_a, l, zi=self._de_l_zi)
-        r, self._de_r_zi = lfilter(self._de_b, self._de_a, r, zi=self._de_r_zi)
+        # 9. Spectral noise reduction — pre-de-emphasis.
+        #    FM stations apply 75 µs pre-emphasis before transmission, boosting
+        #    the signal by +6 dB at 4 kHz, +10 dB at 8 kHz, +17 dB at 15 kHz
+        #    relative to the discriminator noise floor, which is spectrally flat
+        #    (white).  Operating here instead of post-de-emphasis gives the
+        #    Wiener filter a much better per-bin SNR estimate across the full
+        #    0-15 kHz audio band — particularly at the HF end where sibilants,
+        #    hi-hats, and string transients live.
+        _AGC_GATE = 0.025
+        l32       = l.astype(np.float32)
+        r32       = r.astype(np.float32)
+        rms_pre   = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
+        in_noise  = rms_pre <= _AGC_GATE
+        l32       = self._ss_l.process(l32, in_noise)
+        r32       = self._ss_r.process(r32, in_noise)
 
-        # 9b. DC blocker — remove any carrier-induced DC bias before encoding
+        # 9b. De-emphasis (75 µs)
+        l, self._de_l_zi = lfilter(self._de_b, self._de_a, l32, zi=self._de_l_zi)
+        r, self._de_r_zi = lfilter(self._de_b, self._de_a, r32, zi=self._de_r_zi)
+
+        # 9c. DC blocker — remove any carrier-induced DC bias before encoding
         l, self._dc_l_zi = sosfilt(self._dc_sos, l, zi=self._dc_l_zi)
         r, self._dc_r_zi = sosfilt(self._dc_sos, r, zi=self._dc_r_zi)
 
@@ -502,16 +535,10 @@ class FmStereoDemodulator:
         l32 = ((1.0 - shelf_depth) * l32 + shelf_depth * lp_l).astype(np.float32)
         r32 = ((1.0 - shelf_depth) * r32 + shelf_depth * lp_r).astype(np.float32)
 
-        # 10b. Spectral noise subtraction.
-        #      Compute pre-subtraction RMS to drive both the denoiser gate and
-        #      the AGC gate below.  During silence (rms ≤ _AGC_GATE) the per-bin
-        #      noise PSD is updated; during music it is subtracted per-bin with a
-        #      spectral floor at 10 % amplitude to prevent musical-noise artefacts.
-        _AGC_GATE = 0.025
-        rms       = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
-        in_noise  = rms <= _AGC_GATE
-        l32       = self._ss_l.process(l32, in_noise)
-        r32       = self._ss_r.process(r32, in_noise)
+        # 10b. Signal level measurement for the AGC gate below.
+        #      Broadband RMS is used (not K-weighted) because the K-weighting
+        #      HF boost would make hiss appear louder and prevent the gate firing.
+        rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
 
         # 10b.5  Stereo width restoration.
         #        The blend gate attenuates L-R uniformly to suppress discriminator
@@ -536,9 +563,8 @@ class FmStereoDemodulator:
         #      compute RMS of the result.  K-weighted RMS ≈ perceived loudness:
         #      bright stations and bass-heavy stations that would measure the same
         #      on a flat-RMS meter now correctly measure as equally loud.  The
-        #      gate and spectral-subtraction gate still use broadband rms (above)
-        #      since the K-weighting HF boost would make hiss appear louder and
-        #      could prevent the silence gate from firing.
+        #      The AGC gate uses broadband rms (step 10b) since the K-weighting
+        #      HF boost would make hiss appear louder and prevent it from firing.
         kw_l, self._kw_l_zi = sosfilt(_K_WEIGHT_SOS, l32, zi=self._kw_l_zi)
         kw_r, self._kw_r_zi = sosfilt(_K_WEIGHT_SOS, r32, zi=self._kw_r_zi)
         rms_k = float(np.sqrt(np.mean(kw_l ** 2 + kw_r ** 2) / 2)) + 1e-10
