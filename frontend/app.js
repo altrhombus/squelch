@@ -603,43 +603,130 @@ async function loadHistory() {
     return;
   }
   items.forEach(h => {
-    const item = document.createElement("div");
-    item.className = "history-item";
     const freq = h.band === "am"
       ? `${Math.round(h.frequency / 1e3)} kHz`
       : `${parseFloat(h.frequency / 1e6).toFixed(1)} MHz`;
     const musicUrl = (h.artist && h.title)
       ? `https://music.apple.com/search?term=${encodeURIComponent(h.artist + " " + h.title)}`
       : null;
-    item.innerHTML = `
-      <div class="history-info">
-        <span class="history-station">${esc(h.station_name || freq)}</span>
-        ${h.artist && h.title
-          ? `<span class="history-track">${esc(h.artist)} — ${esc(h.title)}</span>`
-          : ""}
+    // Only show freq badge separately when we also have a station name
+    const freqBadge = h.station_name
+      ? `<span class="history-freq">${freq}</span>`
+      : "";
+
+    const row = document.createElement("div");
+    row.className = "history-row";
+    row.innerHTML = `
+      <div class="history-swipe-bg" aria-hidden="true">Delete</div>
+      <div class="history-item">
+        <div class="history-info">
+          <div class="history-line1">
+            <div class="history-name-freq">
+              <span class="history-station">${esc(h.station_name || freq)}</span>
+              ${freqBadge}
+            </div>
+            <span class="history-time">${timeAgo(h.seen_at)}</span>
+          </div>
+          ${h.artist && h.title
+            ? `<span class="history-track">${esc(h.artist)} — ${esc(h.title)}</span>`
+            : ""}
+        </div>
+        ${musicUrl ? `<a class="btn-music" href="${musicUrl}" target="_blank" rel="noopener" aria-label="Open in Apple Music" title="Open in Apple Music">♫</a>` : ""}
+        <button class="btn-delete btn-history-del" aria-label="Delete history item" title="Delete">×</button>
       </div>
-      <div class="history-meta">
-        <span class="history-time">${timeAgo(h.seen_at)}</span>
-        <span class="history-freq">${freq} ${(h.band || "").toUpperCase()}</span>
-      </div>
-      ${musicUrl ? `<a class="btn-music" href="${musicUrl}" target="_blank" rel="noopener" aria-label="Open in Apple Music" title="Open in Apple Music">♫</a>` : ""}
     `;
+
+    const item = row.querySelector(".history-item");
+
+    // Click to retune (suppress if swipe or music link)
     item.addEventListener("click", (e) => {
-      if (e.target.closest(".btn-music")) return;
+      if (e.target.closest(".btn-music") || e.target.closest(".btn-history-del")) return;
+      if (item.dataset.swiped) { item.dataset.swiped = ""; return; }
       const tuneFreq = h.band === "am"
         ? Math.round(h.frequency / 1e3)
         : parseFloat(h.frequency / 1e6);
       tune(tuneFreq, h.band);
     });
-    historyList.appendChild(item);
+
+    // Desktop delete button
+    row.querySelector(".btn-history-del").addEventListener("click", (e) => {
+      e.stopPropagation();
+      _deleteHistoryRow(h.id, row);
+    });
+
+    _addSwipeDelete(row, item, h.id);
+    historyList.appendChild(row);
   });
 }
 
-async function clearHistory() {
-  if (confirm("Clear all history?")) {
-    await api("DELETE", "/history");
-    historyList.innerHTML = '<p class="empty-hint">Nothing heard yet</p>';
-  }
+function _addSwipeDelete(row, item, id) {
+  const bg = row.querySelector(".history-swipe-bg");
+  const REVEAL = 72;
+  let x0 = 0, y0 = 0;
+  let determined = false, isHoriz = false;
+  let revealed = false;
+
+  const snap = (open) => {
+    item.style.transition = "transform 0.2s ease";
+    item.style.transform = open ? `translateX(-${REVEAL}px)` : "translateX(0)";
+    bg.style.pointerEvents = open ? "auto" : "none";
+    revealed = open;
+  };
+
+  item.addEventListener("touchstart", (e) => {
+    x0 = e.touches[0].clientX;
+    y0 = e.touches[0].clientY;
+    determined = false;
+    isHoriz = false;
+    item.style.transition = "none";
+  }, { passive: true });
+
+  item.addEventListener("touchmove", (e) => {
+    const dx = e.touches[0].clientX - x0;
+    const dy = e.touches[0].clientY - y0;
+    if (!determined && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+      determined = true;
+      isHoriz = Math.abs(dx) > Math.abs(dy);
+    }
+    if (!isHoriz) return;
+    e.preventDefault();
+    item.dataset.swiped = "1";
+    const clamped = revealed
+      ? Math.max(-REVEAL, Math.min(0, dx - REVEAL))
+      : Math.max(-REVEAL, Math.min(0, dx));
+    item.style.transform = `translateX(${clamped}px)`;
+  }, { passive: false });
+
+  item.addEventListener("touchend", (e) => {
+    if (!isHoriz) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    const netDx = revealed ? dx - REVEAL : dx;
+    snap(netDx < -(REVEAL / 2));
+    setTimeout(() => { item.dataset.swiped = ""; }, 50);
+  });
+
+  bg.addEventListener("click", (e) => {
+    e.stopPropagation();
+    _deleteHistoryRow(id, row);
+  });
+}
+
+async function _deleteHistoryRow(id, row) {
+  const h = row.offsetHeight;
+  row.style.height = h + "px";
+  row.style.overflow = "hidden";
+  row.style.transition = "height 0.2s ease, opacity 0.15s ease";
+  requestAnimationFrame(() => {
+    row.style.height = "0";
+    row.style.opacity = "0";
+  });
+  await api("DELETE", `/history/${id}`);
+  setTimeout(() => {
+    row.remove();
+    if (!historyList.querySelector(".history-row")) {
+      historyList.innerHTML = '<p class="empty-hint">Nothing heard yet</p>';
+    }
+  }, 220);
 }
 
 function timeAgo(ts) {
@@ -788,9 +875,6 @@ btnPresetSave.addEventListener("click", async () => {
 });
 presetNameInput.addEventListener("keydown", e => { if (e.key === "Enter") btnPresetSave.click(); });
 modalPreset.addEventListener("click", e => { if (e.target === modalPreset) closeModal(); });
-
-// Clear history
-document.getElementById("btn-clear-history")?.addEventListener("click", clearHistory);
 
 // ---------------------------------------------------------------------------
 // Init

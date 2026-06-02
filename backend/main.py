@@ -305,6 +305,17 @@ async def get_history():
         await db.close()
 
 
+@app.delete("/history/{history_id}", status_code=204)
+async def delete_history_item(history_id: int):
+    from .db import get_db
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM history WHERE id = ?", (history_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
 @app.delete("/history", status_code=204)
 async def clear_history():
     from .db import get_db

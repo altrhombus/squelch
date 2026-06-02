@@ -407,8 +407,7 @@ input[type="range"]:focus-visible {
   padding: 14px;
 }
 
-#presets-header,
-#history-header {
+#presets-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -423,8 +422,7 @@ h2 {
   color: var(--muted);
   margin-bottom: 12px;
 }
-#presets-header h2,
-#history-header h2 { margin-bottom: 0; }
+#presets-header h2 { margin-bottom: 0; }
 
 .btn-small {
   background: var(--surface2);
@@ -515,20 +513,43 @@ h2 {
 .empty-hint { color: var(--muted); font-size: 13px; text-align: center; padding: 12px 0; }
 
 /* =====================================================
-   History items
+   History items — swipe-to-delete
    ===================================================== */
 
-.history-item {
+/* Outer wrapper: clips the sliding item and shows the delete bg */
+.history-row {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Red delete zone revealed by the swipe */
+.history-swipe-bg {
+  position: absolute;
+  inset: 0;
+  background: var(--record-on);
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-end;
+  padding-right: 18px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none; /* enabled in JS once revealed */
+  user-select: none;
+}
+
+.history-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   background: var(--surface2);
   border-radius: 8px;
   padding: 10px 12px;
   cursor: pointer;
-  transition: background 0.15s;
-  text-decoration: none;
-  color: inherit;
+  /* transition set dynamically during swipe */
+  will-change: transform;
 }
 .history-item:hover { background: #2e2e2e; }
 
@@ -537,7 +558,22 @@ h2 {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
+}
+
+/* Line 1: station name (left) + freq · time (right) */
+.history-line1 {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.history-name-freq {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
 }
 .history-station {
   font-size: 13px;
@@ -546,33 +582,33 @@ h2 {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.history-track {
-  font-size: 12px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.history-meta {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-  flex-shrink: 0;
-}
-.history-time {
-  font-size: 11px;
-  color: var(--muted);
+  flex-shrink: 1;
 }
 .history-freq {
   font-size: 11px;
   font-weight: 600;
   color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.history-time {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-/* Apple Music link in history rows */
+/* Line 2: artist — title, up to 2 wrapped lines */
+.history-track {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Apple Music link */
 .btn-music {
   background: none;
   border: none;
@@ -589,6 +625,16 @@ h2 {
   align-items: center;
 }
 .btn-music:hover { color: var(--text); }
+
+/* Delete button — hidden on touch, shown on desktop hover */
+.btn-history-del {
+  display: none;
+}
+@media (hover: hover) {
+  .history-row:hover .btn-history-del {
+    display: flex;
+  }
+}
 
 /* =====================================================
    Diagnostics (power user, kept for completeness)
