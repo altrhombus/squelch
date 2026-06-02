@@ -61,7 +61,15 @@ _MINSTAT_UPDATE_EVERY = 8
 # Empirical pipeline measurement: 200–250.  Using 200 (65% of analytical) keeps
 # the floor conservatively below the true per-bin noise so the Wiener cannot
 # over-subtract.  Slightly under-estimating is safe; over-estimating is not.
-_PHYS_SCALE = 200.0
+_PHYS_SCALE   = 200.0
+# Minimum Wiener gain per bin.  Prevents gain from collapsing to near-zero at
+# noise-only frequencies, which creates a large per-frame spectral contrast
+# between formant bins (gain≈1) and inter-formant bins (gain→0) that sounds
+# "watery" on voices, especially on weak stations.  0.20 = −14 dB floor;
+# reduces worst-case contrast from ~20:1 to ~5:1 without audible noise increase.
+# Applied to the OUTPUT gain only — DD state (prev_gain) retains the unfloored
+# Wiener value so the temporal smoother's feedback is not distorted.
+_WIENER_FLOOR = 0.20
 
 # ITU-R BS.1770-4 K-weighting filter — two cascaded biquads, pre-computed for 48 kHz.
 # Stage 1: head-acoustics pre-filter (high-shelf boost above ~1 kHz).
@@ -218,24 +226,25 @@ class _SpectralSubtractor:
             xi       = np.maximum(xi, 1e-10)
             gain     = xi / (xi + 1.0)
 
-            # Two-pass 3-bin frequency smoother — equivalent to a single
-            # [0.0625, 0.25, 0.375, 0.25, 0.0625] 5-bin Gaussian-like kernel.
-            # One pass (±47 Hz) left visible bin-to-bin gain variation that
-            # sounds "digital" on sibilants; two passes (±94 Hz) smooths that
-            # out while staying well below the spectral-envelope resolution
-            # of human hearing (~hundreds of Hz for timbre discrimination).
-            g_s        = gain.copy()
-            g_s[1:-1]  = 0.25 * gain[:-2]  + 0.5 * gain[1:-1]  + 0.25 * gain[2:]
+            # Update DD state with unsmoothed, unfloored gain so the temporal
+            # smoother's feedback is not affected by the output floor below.
+            self._prev_gain  = gain
+            self._prev_gamma = gamma
+
+            # Minimum gain floor — limits worst-case attenuation to −14 dB and
+            # reduces the inter-formant vs formant gain contrast that sounds
+            # "watery" on voices at low SNR.
+            gain_f = np.maximum(gain, _WIENER_FLOOR)
+
+            # Two-pass 3-bin frequency smoother on the floored gain — equivalent
+            # to [0.0625, 0.25, 0.375, 0.25, 0.0625] 5-bin Gaussian-like kernel.
+            g_s        = gain_f.copy()
+            g_s[1:-1]  = 0.25 * gain_f[:-2] + 0.5 * gain_f[1:-1] + 0.25 * gain_f[2:]
             g_s2       = g_s.copy()
-            g_s2[1:-1] = 0.25 * g_s[:-2]   + 0.5 * g_s[1:-1]   + 0.25 * g_s[2:]
+            g_s2[1:-1] = 0.25 * g_s[:-2]    + 0.5 * g_s[1:-1]    + 0.25 * g_s[2:]
 
             # Where mask=0 (above FM audio bandwidth) force gain to 1.
             X_out = X * (self._sub_mask * g_s2 + (1.0 - self._sub_mask))
-
-            # Update decision-directed state with unsmoothed gain; using the
-            # smoothed version would flatten the temporal response.
-            self._prev_gain  = gain
-            self._prev_gamma = gamma
 
             frame_out                          = np.fft.irfft(X_out, n=self._n_fft) * self._win
             self._ola                         += frame_out
