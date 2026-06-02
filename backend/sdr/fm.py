@@ -69,7 +69,7 @@ _PHYS_SCALE   = 200.0
 # reduces worst-case contrast from ~20:1 to ~5:1 without audible noise increase.
 # Applied to the OUTPUT gain only — DD state (prev_gain) retains the unfloored
 # Wiener value so the temporal smoother's feedback is not distorted.
-_WIENER_FLOOR = 0.20
+_WIENER_FLOOR = 0.25
 
 # ITU-R BS.1770-4 K-weighting filter — two cascaded biquads, pre-computed for 48 kHz.
 # Stage 1: head-acoustics pre-filter (high-shelf boost above ~1 kHz).
