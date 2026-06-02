@@ -155,9 +155,15 @@ class _SpectralSubtractor:
         # (PSD × 15 kHz effective bandwidth × 512 STFT integration); refined in
         # place during silence frames via a very slow EMA so any pipeline gain
         # drift is absorbed automatically.
+        #
+        # _phys_ready stays False until the first silence frame is processed.
+        # The physics floor is not applied until then — using the uncalibrated
+        # 307 initial estimate caused noticeably more aggressive Wiener gain in
+        # the first few seconds after tuning before the scale converged.
         self._fm_bins    = int(15_000 * n_fft / 48_000)   # 320 bins for n_fft=1024
         self._phys_scale = 307.0
         self._phys_alpha = 0.005   # τ ≈ 200 silence frames before scale is reliable
+        self._phys_ready = False   # True after the first silence calibration frame
 
         # Subtraction mask: flat 1.0 across 0-15 kHz (FM audio bandwidth),
         # linear taper to 0 at 16 kHz.  Bins above the FM bandwidth have no
@@ -221,7 +227,9 @@ class _SpectralSubtractor:
                     _mean_pwr        = float(power[:self._fm_bins].mean())
                     _target_scale    = _mean_pwr / (noise_rms ** 2 + 1e-30)
                     self._phys_scale += self._phys_alpha * (_target_scale - self._phys_scale)
-                noise_est = np.maximum(noise_est, noise_rms ** 2 * self._phys_scale)
+                    self._phys_ready  = True
+                if self._phys_ready:
+                    noise_est = np.maximum(noise_est, noise_rms ** 2 * self._phys_scale)
 
             # Ephraim-Malah decision-directed Wiener gain.
             # γ = a posteriori SNR; ξ = a priori SNR tracked via the previous
