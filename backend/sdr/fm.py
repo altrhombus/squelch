@@ -134,14 +134,14 @@ class _SpectralSubtractor:
         self._ms_frame_ctr   = _MINSTAT_UPDATE_EVERY - 1
         self._ms_min_cache   = np.zeros(_n_bins, dtype=np.float64)
 
-        # Frequency-dependent subtraction mask.
-        # Extends to 6 kHz (previously 4 kHz): the 4-6 kHz band ("presence/clarity")
-        # carries vowel formants and vocal presence, and is the dominant noise band
-        # on weak FM signals.  At 4 kHz the effective subtraction is
-        # over_sub × 0.5 = 0.225 — conservative enough not to disturb sibilant
-        # envelopes.  Above 6 kHz (where 's', 'sh' peak) the mask is zero.
+        # Frequency-dependent subtraction mask: full below 2 kHz, linear taper
+        # to zero at 4 kHz, nothing above.  Sibilants ('s', 'sh', 'f') have
+        # energy starting at ~3.5 kHz; the taper to zero at 4 kHz keeps the
+        # lower sibilant lobe intact.  A 6 kHz cutoff was tried but the
+        # onset/offset transition frames of sibilants received up to 15%
+        # attenuation in the 3.5-5 kHz range, producing audible static.
         _freqs            = np.arange(_n_bins) * (48_000.0 / n_fft)
-        self._sub_mask    = np.clip((6_000.0 - _freqs) / 4_000.0,
+        self._sub_mask    = np.clip((4_000.0 - _freqs) / 2_000.0,
                                     0.0, 1.0).astype(np.float64)
 
         self._in_q  = np.empty(0, dtype=np.float32)
