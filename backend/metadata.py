@@ -187,7 +187,7 @@ class MetadataState:
         import json
         msg = json.dumps(self.to_dict())
         dead = set()
-        for ws in self._websockets:
+        for ws in list(self._websockets):
             try:
                 await ws.send_text(msg)
             except Exception:
@@ -200,7 +200,7 @@ class MetadataState:
         import json
         msg = json.dumps({"event": event})
         dead = set()
-        for ws in self._websockets:
+        for ws in list(self._websockets):
             try:
                 await ws.send_text(msg)
             except Exception:
