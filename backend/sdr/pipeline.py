@@ -313,4 +313,6 @@ class RadioPipeline:
             data.get("rt") or None,
             data.get("pty") or None,
             data.get("pi") or None,
+            data.get("rtp_title"),   # RT+ structured title (None if not received)
+            data.get("rtp_artist"),  # RT+ structured artist (None if not received)
         )

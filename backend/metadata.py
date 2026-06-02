@@ -31,6 +31,7 @@ class MetadataState:
         self.state: str = "idle"           # idle | tuning | buffering | live
         self._last_history_key: Optional[str] = None
         self._history_save_task: Optional[asyncio.Task] = None
+        self._has_rtp: bool = False   # True once RT+ structured data received
         self._websockets: set[WebSocket] = set()
 
     def to_dict(self) -> dict:
@@ -68,22 +69,40 @@ class MetadataState:
         self.hd_locked = False
         self.stereo = False
         self.has_art = False
+        self._has_rtp = False
         self.state = "tuning"
         self._clear_art()
 
     def update_state(self, state: str):
         self.state = state
 
-    def update_rds(self, ps: str = None, rt: str = None, pty: str = None, pi: str = None):
+    def update_rds(self, ps: str = None, rt: str = None, pty: str = None, pi: str = None,
+                   rtp_title: str = None, rtp_artist: str = None):
         changed = False
+
         if ps and ps.strip() and ps.strip() != self.station_name:
             self.station_name = ps.strip()
             changed = True
-        if rt and rt.strip():
+
+        # RT+ structured tags (IEC 62106 Annex A) take priority over heuristic
+        # text splitting.  Once a station provides RT+ data, suppress the
+        # fallback parser so stale RT text doesn't overwrite clean tag values.
+        if rtp_title is not None and rtp_title != self.title:
+            self.title = rtp_title
+            self._has_rtp = True
+            changed = True
+        if rtp_artist is not None and rtp_artist != self.artist:
+            self.artist = rtp_artist
+            self._has_rtp = True
+            changed = True
+
+        # Heuristic RT parsing — only when no RT+ data has been received
+        if rt and rt.strip() and not self._has_rtp:
             parsed = _parse_rt(rt.strip())
             if parsed != (self.artist, self.title):
                 self.artist, self.title = parsed
                 changed = True
+
         if pty and pty != self.pty:
             self.pty = pty
             changed = True

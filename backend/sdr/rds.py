@@ -48,6 +48,9 @@ _OFFSETS = {
 }
 _OFFSET_BY_SYNDROME = {v: k for k, v in _OFFSETS.items()}
 
+# RT+ Application ID (IEC 62106 Annex A)
+_RTP_APP_ID = 0x4BD7
+
 # RBDS program type names (North America)
 _PTY = {
     0:"",1:"News",2:"Information",3:"Sports",4:"Talk",5:"Rock",
@@ -74,6 +77,21 @@ def _syndrome(word26: int) -> int:
             reg = ((reg << 1) | bit)
         reg &= 0x3FF
     return reg
+
+
+def _extract_rtp_tag(rt: str, start: int, length: int) -> Optional[str]:
+    """
+    Extract one RT+ tagged substring from the current RadioText string.
+
+    Per IEC 62106 Annex A: start is the 0-indexed character position, and
+    length is the number of *additional* characters after start, so the
+    actual extracted window is rt[start : start + length + 1].
+    Returns the stripped result, or None if the window is out of range.
+    """
+    end = start + length + 1
+    if end > len(rt):
+        return None
+    return rt[start:end].strip("\x00\x20\x0d\x0a") or None
 
 
 def _syndrome_matches(word26: int) -> Optional[str]:
@@ -137,6 +155,10 @@ class RdsDecoder:
         # PI debounce: a station's PI code never changes; varying PI = bit errors
         self._pi_candidate: Optional[int] = None
         self._pi_seen: int                = 0
+        # RT+ (RadioText Plus) — IEC 62106 Annex A
+        # Group 3A announces which ODA group type carries RT+ for this station.
+        self._rtp_group_type: Optional[int] = None  # 0-15
+        self._rtp_group_ver:  int            = 0     # 0 = A, 1 = B
 
     # ------------------------------------------------------------------
 
@@ -342,6 +364,64 @@ class RdsDecoder:
                     "".join(self._rt_chars[s]) for s in range(16)
                 ).rstrip()
                 update["rt"] = rt
+
+        elif group_type == 3 and b0 == 0:  # Group 3A — ODA application announcement
+            # Block C = 16-bit Application ID
+            # Block B bits [4:1] = ODA group type number (0-15)
+            # Block B bit  [0]   = ODA version (0 = A, 1 = B)
+            if c == _RTP_APP_ID:
+                self._rtp_group_type = (b >> 1) & 0xF
+                self._rtp_group_ver  =  b & 0x1
+                logger.debug("RDS RT+ announced on group %d%s",
+                             self._rtp_group_type, "B" if self._rtp_group_ver else "A")
+
+        elif (self._rtp_group_type is not None
+              and group_type == self._rtp_group_type
+              and b0 == self._rtp_group_ver):  # RT+ ODA data group
+            # Bit layout per IEC 62106 Annex A, Table A.3:
+            #
+            # Block B [4]    item_toggle  — flips each time a new item starts
+            # Block B [3]    item_running — 1 while an item (song) is playing
+            # Block B [2:0]  content_type_1 [5:3]   (high 3 bits of ct1)
+            # Block C [15:13] content_type_1 [2:0]  (low  3 bits of ct1)
+            # Block C [12:7]  start_1 [5:0]          0-indexed char position
+            # Block C [6:1]   length_1 [5:0]          actual length = value + 1
+            # Block C [0]     content_type_2 [5]     (MSB of ct2)
+            # Block D [15:11] content_type_2 [4:0]   (low 5 bits of ct2)
+            # Block D [10:5]  start_2 [5:0]
+            # Block D [4:0]   length_2 [4:0]          actual length = value + 1
+            item_running = (b >> 3) & 0x1
+            if item_running and self._rt_chars:
+                ct1 = ((b & 0x7) << 3) | ((c >> 13) & 0x7)
+                st1 = (c >> 7) & 0x3F
+                ln1 = (c >> 1) & 0x3F
+                ct2 = ((c & 0x1) << 5) | ((d >> 11) & 0x1F)
+                st2 = (d >> 5) & 0x3F
+                ln2 =  d & 0x1F
+
+                # Reconstruct the current RadioText from whatever segments
+                # have been received; use spaces for any gap segments.
+                max_seg = max(self._rt_chars)
+                chars_per_seg = len(next(iter(self._rt_chars.values())))
+                rt_now = "".join(
+                    "".join(self._rt_chars.get(s, ["\x20"] * chars_per_seg))
+                    for s in range(max_seg + 1)
+                )
+
+                for ct, st, ln in ((ct1, st1, ln1), (ct2, st2, ln2)):
+                    if ct == 1:    # ITEM.TITLE
+                        v = _extract_rtp_tag(rt_now, st, ln)
+                        if v:
+                            update["rtp_title"] = v
+                    elif ct == 4:  # ITEM.ARTIST
+                        v = _extract_rtp_tag(rt_now, st, ln)
+                        if v:
+                            update["rtp_artist"] = v
+
+                if "rtp_title" in update or "rtp_artist" in update:
+                    logger.debug("RDS RT+ decoded: %s",
+                                 {k: update[k] for k in ("rtp_title", "rtp_artist")
+                                  if k in update})
 
         if update:
             logger.debug("RDS group decoded: type=%d%s %s", group_type, "B" if b0 else "A", update)
