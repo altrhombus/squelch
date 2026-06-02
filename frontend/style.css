@@ -660,6 +660,24 @@ h2 {
 .hidden { display: none !important; }
 .badge { display: inline-block; }
 
+/* Signal strength tooltip */
+#signal-tooltip {
+  position: fixed;
+  background: rgba(0, 0, 0, 0.82);
+  color: #f0f0f0;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 9px;
+  border-radius: 5px;
+  pointer-events: none;
+  z-index: 200;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s;
+  transform: translate(-50%, calc(-100% - 7px));
+}
+#signal-tooltip.visible { opacity: 1; }
+
 /* Visually hidden but screen-reader accessible */
 .sr-only {
   position: absolute;

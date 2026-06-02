@@ -351,11 +351,15 @@ function applyMeta(m) {
   // Stereo indicator
   toggleEl(elStereo, m.stereo);
 
-  // Signal bars — update aria-label with human-readable strength
+  // Signal bars — update aria-label and tooltip text
   const b = m.signal_bars || 0;
-  const signalLabels = ["no signal", "poor", "weak", "fair", "good", "excellent"];
+  const signalLabels = ["No signal", "Poor", "Weak", "Fair", "Good", "Excellent"];
+  const signalLabel = signalLabels[b] || "No signal";
   const signalMeter = document.getElementById("signal-meter");
-  if (signalMeter) signalMeter.setAttribute("aria-label", `Signal: ${signalLabels[b] || "no signal"}`);
+  if (signalMeter) {
+    signalMeter.setAttribute("aria-label", `Signal: ${signalLabel}`);
+    signalMeter.dataset.signalLabel = signalLabel;
+  }
   bars.forEach(bar => bar.classList.toggle("active", Number(bar.dataset.n) <= b));
 }
 
@@ -578,6 +582,22 @@ function esc(s) {
 // ---------------------------------------------------------------------------
 // Event wiring
 // ---------------------------------------------------------------------------
+
+// Signal strength tooltip
+const signalTooltipEl = document.getElementById("signal-tooltip");
+const signalMeterEl   = document.getElementById("signal-meter");
+signalMeterEl?.addEventListener("mouseenter", () => {
+  if (!signalTooltipEl) return;
+  const label = signalMeterEl.dataset.signalLabel || "No signal";
+  signalTooltipEl.textContent = `Signal: ${label}`;
+  const rect = signalMeterEl.getBoundingClientRect();
+  signalTooltipEl.style.left = `${rect.left + rect.width / 2}px`;
+  signalTooltipEl.style.top  = `${rect.top}px`;
+  signalTooltipEl.classList.add("visible");
+});
+signalMeterEl?.addEventListener("mouseleave", () => {
+  signalTooltipEl?.classList.remove("visible");
+});
 
 // Band tabs
 document.querySelectorAll(".band-tab").forEach(tab => {
