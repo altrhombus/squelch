@@ -212,9 +212,19 @@ class RadioManager:
                 await asyncio.sleep(1)
                 bars, stereo = self._estimate_signal()
                 self._meta.update_signal(bars, stereo)
+                # PP telemetry read once per second in asyncio — keeps the DSP
+                # executor thread free of dict allocation and call_soon_threadsafe.
+                self._meta.update_post_processing(self._read_pp_state())
                 await self._meta.broadcast()
         except asyncio.CancelledError:
             pass
+
+    def _read_pp_state(self):
+        if self._pipeline and self._pipeline._demod is not None:
+            st = getattr(self._pipeline._demod, "last_pp_state", None)
+            if st is not None:
+                return st.to_dict()
+        return None
 
     def _estimate_signal(self) -> tuple[int, bool]:
         """

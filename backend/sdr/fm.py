@@ -196,18 +196,23 @@ class _MultibandCompressor:
                  release_ms: float = 200.0, threshold_db: float = -18.0):
         self._ratio     = float(ratio)
         self._threshold = 10.0 ** (threshold_db / 20.0)
-        bps = _AUDIO_RATE / 5243.0              # approximate blocks per second
+        bps = _AUDIO_RATE / 5243.0
         self._atk = 1.0 - np.exp(-1.0 / max(1.0, attack_ms  * 1e-3 * bps))
         self._rel = 1.0 - np.exp(-1.0 / max(1.0, release_ms * 1e-3 * bps))
-        self._lp1 = butter(4,    250, 'lowpass',  fs=_AUDIO_RATE, output='sos')
-        self._hp1 = butter(4,    250, 'highpass', fs=_AUDIO_RATE, output='sos')
-        self._lp2 = butter(4, 4_000, 'lowpass',  fs=_AUDIO_RATE, output='sos')
-        self._hp2 = butter(4, 4_000, 'highpass', fs=_AUDIO_RATE, output='sos')
-        self._lp1_zi = [_zero_zi(self._lp1), _zero_zi(self._lp1)]
-        self._hp1_zi = [_zero_zi(self._hp1), _zero_zi(self._hp1)]
-        self._lp2_zi = [_zero_zi(self._lp2), _zero_zi(self._lp2)]
-        self._hp2_zi = [_zero_zi(self._hp2), _zero_zi(self._hp2)]
-        self._env     = np.full((2, 3), self._threshold, dtype=np.float64)
+        # 2nd-order crossovers (1 SOS section each) — adequate for spectral
+        # balance correction and half the compute of LR4.
+        self._lp1 = butter(2,    250, 'lowpass',  fs=_AUDIO_RATE, output='sos')
+        self._hp1 = butter(2,    250, 'highpass', fs=_AUDIO_RATE, output='sos')
+        self._lp2 = butter(2, 4_000, 'lowpass',  fs=_AUDIO_RATE, output='sos')
+        self._hp2 = butter(2, 4_000, 'highpass', fs=_AUDIO_RATE, output='sos')
+        # zi shape (n_sections, 2_channels, 2) for single 2-channel sosfilt call
+        def _zi2(sos): return np.zeros((sos.shape[0], 2, 2), dtype=np.float64)
+        self._lp1_zi = _zi2(self._lp1)
+        self._hp1_zi = _zi2(self._hp1)
+        self._lp2_zi = _zi2(self._lp2)
+        self._hp2_zi = _zi2(self._hp2)
+        # Envelope state: shape (2_channels, 3_bands)
+        self._env = np.full((2, 3), self._threshold, dtype=np.float64)
         self.last_gr_db = 0.0
 
     def process(self, l32: np.ndarray, r32: np.ndarray,
@@ -215,31 +220,31 @@ class _MultibandCompressor:
         if eff < 1e-3:
             self.last_gr_db = 0.0
             return l32, r32
-        outputs  = []
+        # Stack both channels: shape (2, n_samples) — one sosfilt call per filter
+        x                    = np.stack([l32.astype(np.float64),
+                                          r32.astype(np.float64)])
+        low, self._lp1_zi    = sosfilt(self._lp1, x,  axis=-1, zi=self._lp1_zi)
+        mh,  self._hp1_zi    = sosfilt(self._hp1, x,  axis=-1, zi=self._hp1_zi)
+        mid, self._lp2_zi    = sosfilt(self._lp2, mh, axis=-1, zi=self._lp2_zi)
+        hi,  self._hp2_zi    = sosfilt(self._hp2, mh, axis=-1, zi=self._hp2_zi)
+        out      = np.zeros_like(x)
         gain_sum = 0.0
-        for ch, x32 in enumerate([l32, r32]):
-            x   = x32.astype(np.float64)
-            low, self._lp1_zi[ch] = sosfilt(self._lp1, x,  zi=self._lp1_zi[ch])
-            mh,  self._hp1_zi[ch] = sosfilt(self._hp1, x,  zi=self._hp1_zi[ch])
-            mid, self._lp2_zi[ch] = sosfilt(self._lp2, mh, zi=self._lp2_zi[ch])
-            hi,  self._hp2_zi[ch] = sosfilt(self._hp2, mh, zi=self._hp2_zi[ch])
-            out = np.zeros_like(x)
-            for i, band in enumerate([low, mid, hi]):
-                rms   = float(np.sqrt(np.mean(band ** 2))) + 1e-10
-                alpha = self._atk if rms > self._env[ch, i] else self._rel
-                self._env[ch, i] += alpha * (rms - self._env[ch, i])
-                env = float(self._env[ch, i])
-                if env > self._threshold:
-                    g = ((self._threshold / env)
-                         * (env / self._threshold) ** (1.0 / self._ratio))
-                else:
-                    g = 1.0
-                g = 1.0 - eff * (1.0 - g)   # fade effect in with eff
-                out      += band * g
-                gain_sum += g
-            outputs.append(out.astype(np.float32))
+        for i, band in enumerate([low, mid, hi]):
+            # Vectorised over channels — rms/alpha/g all shape (2,)
+            rms   = np.sqrt(np.mean(band ** 2, axis=-1)) + 1e-10
+            alpha = np.where(rms > self._env[:, i], self._atk, self._rel)
+            self._env[:, i] += alpha * (rms - self._env[:, i])
+            env = self._env[:, i]
+            g = np.where(
+                env > self._threshold,
+                (self._threshold / env) * (env / self._threshold) ** (1.0 / self._ratio),
+                1.0,
+            )
+            g         = 1.0 - eff * (1.0 - g)
+            out      += band * g[:, np.newaxis]
+            gain_sum += float(g.sum())
         self.last_gr_db = float(20.0 * np.log10(max(gain_sum / 6.0, 1e-6)))
-        return outputs[0], outputs[1]
+        return out[0].astype(np.float32), out[1].astype(np.float32)
 
 
 class _WarmthEQ:
