@@ -27,28 +27,6 @@ logger = logging.getLogger(__name__)
 _AVIATION_LO = 118e6
 _AVIATION_HI = 137e6
 
-# Mapping from internal PP module key → settings.yaml config key
-_PP_MOD_TO_CFG = {
-    "ms":            "ms_processing",
-    "compress":      "multiband_compress",
-    "exciter":       "exciter",
-    "comfort_noise": "comfort_noise",
-    "warmth_eq":     "warmth_eq",
-}
-
-
-def _apply_pp_patch(pp_cfg: dict, patch: dict):
-    """Apply a patch dict (using internal module keys) to the raw config dict."""
-    if "enabled" in patch:
-        pp_cfg["enabled"] = bool(patch["enabled"])
-    for mod_key, mod_patch in patch.get("modules", {}).items():
-        cfg_key = _PP_MOD_TO_CFG.get(mod_key, mod_key)
-        section = pp_cfg.setdefault(cfg_key, {})
-        if "enabled" in mod_patch:
-            section["enabled"] = bool(mod_patch["enabled"])
-        if "signal_threshold" in mod_patch:
-            section["signal_threshold"] = float(mod_patch["signal_threshold"])
-
 
 class RadioManager:
     def __init__(self, config: dict, metadata: MetadataState, streaming: StreamingManager):
@@ -57,10 +35,9 @@ class RadioManager:
         self._streams  = streaming
 
         sdr_cfg = config.get("sdr", {})
-        self._device_index    = sdr_cfg.get("device_index", 0)
-        self._ppm             = sdr_cfg.get("ppm_correction", 0)
-        self._deemphasis      = sdr_cfg.get("deemphasis_us", 75)
-        self._pp_cfg          = config.get("post_processing", {})
+        self._device_index = sdr_cfg.get("device_index", 0)
+        self._ppm          = sdr_cfg.get("ppm_correction", 0)
+        self._deemphasis   = sdr_cfg.get("deemphasis_us", 75)
 
         self._pipeline: Optional[object]      = None   # RadioPipeline
         self._nrsc5:    Optional[Nrsc5Backend] = None
@@ -136,33 +113,10 @@ class RadioManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def set_pp_bypass(self, bypass: bool):
-        """Toggle post-processing bypass at runtime for A/B comparison."""
-        if self._pipeline and self._pipeline._demod is not None:
-            self._pipeline._demod.pp_bypass = bypass
-
-    def get_pp_config(self) -> dict:
-        if self._pipeline and self._pipeline._demod is not None:
-            pp = getattr(self._pipeline._demod, "_pp", None)
-            if pp is not None:
-                return pp.get_config()
-        return {"enabled": False, "modules": {}}
-
-    def patch_pp_config(self, patch: dict) -> dict:
-        if self._pipeline and self._pipeline._demod is not None:
-            pp = getattr(self._pipeline._demod, "_pp", None)
-            if pp is not None:
-                pp.patch_config(patch)
-                # Keep cached config in sync so retuning preserves session state
-                _apply_pp_patch(self._pp_cfg, patch)
-                return pp.get_config()
-        return {"enabled": False, "modules": {}}
-
     async def _start_pipeline(self, freq_hz: float, band: str, gain, deemph: int, stereo_mode: str = "auto"):
         from ..sdr.pipeline import RadioPipeline
         self._pipeline = RadioPipeline(self._cfg, self._meta, self._streams)
-        await self._pipeline.start(freq_hz, band, gain=gain, deemphasis_us=deemph,
-                                   stereo_mode=stereo_mode, post_processing=self._pp_cfg)
+        await self._pipeline.start(freq_hz, band, gain=gain, deemphasis_us=deemph, stereo_mode=stereo_mode)
 
     async def _start_hd(self, freq_hz: float):
         encoder = AacEncoder(stereo=True)
@@ -207,24 +161,20 @@ class RadioManager:
     # ------------------------------------------------------------------
 
     async def _signal_loop(self):
+        _prev = (-1, None, None)   # (bars, stereo, state) — track last broadcast
         try:
             while True:
                 await asyncio.sleep(1)
                 bars, stereo = self._estimate_signal()
                 self._meta.update_signal(bars, stereo)
-                # PP telemetry read once per second in asyncio — keeps the DSP
-                # executor thread free of dict allocation and call_soon_threadsafe.
-                self._meta.update_post_processing(self._read_pp_state())
-                await self._meta.broadcast()
+
+                # Only push a WebSocket frame when user-visible state changed.
+                cur = (bars, stereo, self._meta.state)
+                if cur != _prev:
+                    _prev = cur
+                    await self._meta.broadcast()
         except asyncio.CancelledError:
             pass
-
-    def _read_pp_state(self):
-        if self._pipeline and self._pipeline._demod is not None:
-            st = getattr(self._pipeline._demod, "last_pp_state", None)
-            if st is not None:
-                return st.to_dict()
-        return None
 
     def _estimate_signal(self) -> tuple[int, bool]:
         """

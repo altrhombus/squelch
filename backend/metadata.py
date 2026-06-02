@@ -31,7 +31,6 @@ class MetadataState:
         self.apple_music_url: Optional[str] = None
         # lifecycle state pushed to the frontend for status display
         self.state: str = "idle"           # idle | tuning | buffering | live
-        self.post_processing: Optional[dict] = None   # live PP state from DSP thread
         self._last_history_key: Optional[str] = None
         self._history_save_task: Optional[asyncio.Task] = None
         self._has_rtp: bool = False   # True once RT+ structured data received
@@ -54,7 +53,6 @@ class MetadataState:
             "art_url": "/art/current.jpg" if self.has_art else None,
             "apple_music_url": self.apple_music_url,
             "state": self.state,
-            "post_processing": self.post_processing,
         }
 
     def update_tune(self, frequency: float, band: str):
@@ -164,9 +162,6 @@ class MetadataState:
         self.signal_bars = max(0, min(5, bars))
         if stereo is not None:
             self.stereo = stereo
-
-    def update_post_processing(self, pp_dict: Optional[dict]):
-        self.post_processing = pp_dict
 
     def _clear_art(self):
         try:
