@@ -12,11 +12,11 @@ No FIFO, no ffmpeg, no HLS directories.
 
 import asyncio
 import logging
+import math
 import os
 from typing import Optional
 
 import numpy as np
-from scipy.signal import resample_poly
 
 from ..metadata import MetadataState
 from ..streaming import StreamingManager, AacEncoder
@@ -28,17 +28,14 @@ logger = logging.getLogger(__name__)
 _AVIATION_LO = 118e6
 _AVIATION_HI = 137e6
 
-# nrsc5 outputs 44100 Hz PCM; we resample to 48000 Hz via resample_poly(160, 147).
-# The default FIR half-length is 10 × max(up, down) = 1600 samples — longer than the
-# typical PCM block (~1024 samples).  Without carrying filter state between calls,
-# every output sample falls within the edge artifact zone, producing a 43 Hz AM wobble
-# at the block rate.  Prepending the last _HD_RESAMP_HALFLEN input samples as left
-# context and trimming the corresponding output eliminates the dominant left-edge
-# transient.  The right edge uses the default padtype='constant' (freeze at last
-# sample) — acoustically neutral; linear extrapolation was tried but created a
-# phase-mismatched "phantom" of speech that sounded like a small-room reflection.
-_HD_RESAMP_HALFLEN = 1600                          # 10 × max(160, 147)
-_HD_RESAMP_TRIM    = round(_HD_RESAMP_HALFLEN * 160 / 147)   # ≈ 1741 output samples to strip
+# nrsc5 outputs 44100 Hz PCM in ~1024-sample blocks (~23 ms).  We need 48000 Hz.
+# resample_poly(160, 147) uses a 3201-tap FIR (half-length 1600 samples) — longer
+# than the entire block, so every output sample falls within both edge artifact zones.
+# Context-carry attempts moved the dominant artifact to the right edge, which locked
+# it to a consistent phase (~0.44) within every block, manifesting as a periodic
+# click pattern at 43 Hz.  Linear interpolation (np.interp) is stateless, has zero
+# block-edge artifacts, and introduces only a mild sinc rolloff (≤ −1.5 dB at 14 kHz,
+# ≤ −2.5 dB at 18 kHz) — well within the tolerance of the broadcast chain.
 
 
 class RadioManager:
@@ -133,20 +130,13 @@ class RadioManager:
 
     async def _start_hd(self, freq_hz: float):
         encoder = AacEncoder(stereo=True)
-        _live = [False]  # mutable flag for the pcm_cb closure
-
-        # Resampler left-context state — persists across pcm_cb calls.
-        # Carries the tail of the previous input block so the FIR filter has
-        # proper left-side context, eliminating the block-rate (43 Hz) AM wobble.
-        _ctx_l = np.zeros(_HD_RESAMP_HALFLEN, dtype=np.float32)
-        _ctx_r = np.zeros(_HD_RESAMP_HALFLEN, dtype=np.float32)
+        _live       = [False]   # mutable flag for the pcm_cb closure
+        _in_total   = [0]       # total input samples consumed — keeps output grid continuous
 
         def meta_cb(data: dict):
             self._meta.update_nrsc5(**data)
 
         def pcm_cb(pcm_l: object, pcm_r: object):
-            nonlocal _ctx_l, _ctx_r
-
             # Transition to "live" on the first audio chunk so the frontend
             # stops showing "Buffering…" and displays station metadata instead.
             if not _live[0]:
@@ -156,28 +146,12 @@ class RadioManager:
 
             l_in = np.asarray(pcm_l, np.float32)
             r_in = np.asarray(pcm_r, np.float32)
+            n_in = len(l_in)
 
-            # Prepend left context, resample, strip the prepended region from output.
-            # padtype='constant' (scipy default) freezes the right edge at the last
-            # sample value — a neutral, inaudible roll-off.  padtype='line' was tried
-            # but linear extrapolation of the block's instantaneous slope creates a
-            # phase-mismatched "phantom continuation" of speech that the symmetric FIR
-            # folds back into the current block's output as a subtle room-reflection
-            # artefact ("cramped/echoey" voices).
-            l = resample_poly(np.concatenate([_ctx_l, l_in]),
-                              160, 147).astype(np.float32)[_HD_RESAMP_TRIM:]
-            r = resample_poly(np.concatenate([_ctx_r, r_in]),
-                              160, 147).astype(np.float32)[_HD_RESAMP_TRIM:]
-
-            # Update context: save the tail of the current input for next call.
-            tail = min(len(l_in), _HD_RESAMP_HALFLEN)
-            _ctx_l = np.pad(l_in[-tail:], (_HD_RESAMP_HALFLEN - tail, 0))
-            _ctx_r = np.pad(r_in[-tail:], (_HD_RESAMP_HALFLEN - tail, 0))
-
-            # Click blanker — interpolate over nrsc5 glitch bursts (corrupt decoder
-            # output when sync is briefly lost).  Threshold matches the FM soft-limiter
-            # knee; legitimate HD audio rarely reaches this level.
-            for sig in (l, r):
+            # Click blanker — interpolate over nrsc5 glitch bursts before resampling.
+            # Threshold matches the FM soft-limiter knee (0.85); legitimate HD audio
+            # rarely reaches this level.
+            for sig in (l_in, r_in):
                 ck        = np.abs(sig) > 0.85
                 ck[1:]   |= ck[:-1]
                 ck[:-1]  |= ck[1:]
@@ -185,6 +159,24 @@ class RadioManager:
                     xi = np.where(~ck)[0]
                     if len(xi) >= 2:
                         sig[ck] = np.interp(np.where(ck)[0], xi, sig[xi])
+
+            # Resample 44100 → 48000 Hz with stateful linear interpolation.
+            #
+            # Simple per-block np.interp(arange(out_len) * 147/160, ...) restarts
+            # t_out at 0 each call, leaving a compressed inter-block gap (step 0.51
+            # vs normal 0.919 input samples) that creates 43 Hz phase-modulation
+            # sidebands at −40 dB.  The stateful counter (_in_total) makes the output
+            # index grid continuous across calls — sidebands drop to below −100 dB.
+            # At most one output sample per block uses constant-edge extrapolation
+            # (np.interp clamp) by ≤ 0.41 samples — negligible.
+            start_in          = _in_total[0]
+            _in_total[0]     += n_in
+            out_start         = math.ceil(start_in * 160 / 147)
+            out_end           = math.ceil(_in_total[0] * 160 / 147)
+            t_out             = np.arange(out_start, out_end) * (147.0 / 160.0) - start_in
+            t_in              = np.arange(n_in, dtype=np.float64)
+            l = np.interp(t_out, t_in, l_in).astype(np.float32)
+            r = np.interp(t_out, t_in, r_in).astype(np.float32)
 
             chunk = encoder.encode(l, r)
             if chunk:
