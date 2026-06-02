@@ -232,13 +232,19 @@ class _SpectralSubtractor:
             xi       = np.maximum(xi, 1e-10)
             gain     = xi / (xi + 1.0)
 
-            # 3-bin frequency smoother — catches any residual bin-by-bin
-            # chatter that the temporal decision-directed smoother misses.
-            g_s       = gain.copy()
-            g_s[1:-1] = 0.25 * gain[:-2] + 0.5 * gain[1:-1] + 0.25 * gain[2:]
+            # Two-pass 3-bin frequency smoother — equivalent to a single
+            # [0.0625, 0.25, 0.375, 0.25, 0.0625] 5-bin Gaussian-like kernel.
+            # One pass (±47 Hz) left visible bin-to-bin gain variation that
+            # sounds "digital" on sibilants; two passes (±94 Hz) smooths that
+            # out while staying well below the spectral-envelope resolution
+            # of human hearing (~hundreds of Hz for timbre discrimination).
+            g_s        = gain.copy()
+            g_s[1:-1]  = 0.25 * gain[:-2]  + 0.5 * gain[1:-1]  + 0.25 * gain[2:]
+            g_s2       = g_s.copy()
+            g_s2[1:-1] = 0.25 * g_s[:-2]   + 0.5 * g_s[1:-1]   + 0.25 * g_s[2:]
 
             # Where mask=0 (above FM audio bandwidth) force gain to 1.
-            X_out = X * (self._sub_mask * g_s + (1.0 - self._sub_mask))
+            X_out = X * (self._sub_mask * g_s2 + (1.0 - self._sub_mask))
 
             # Update decision-directed state with unsmoothed gain; using the
             # smoothed version would flatten the temporal response.
