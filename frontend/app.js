@@ -387,28 +387,33 @@ function applyPpState(pp, band) {
   const panel = document.getElementById("pp-panel");
   if (!panel) return;
 
-  // Only show for FM band when post-processing is enabled
-  if (!pp || !pp.enabled || band !== "fm") {
+  // Only show on FM band
+  if (!pp || band !== "fm") {
     panel.classList.add("hidden");
     return;
   }
 
+  const enabled    = pp.enabled;
   const bypassed   = pp.bypass || _ppBypass;
   const signalPct  = pp.signal_pct ?? 100;
   const mods       = pp.modules || {};
-  const anyActive  = !bypassed && Object.values(mods).some(m => m.active);
+  const anyActive  = enabled && !bypassed && Object.values(mods).some(m => m.active);
 
   panel.classList.remove("hidden");
 
-  // Header color: amber when actively enhancing, dimmed when bypassed or clean signal
   const header = document.getElementById("pp-header");
   if (header) {
-    header.classList.toggle("pp-active",  anyActive);
-    header.classList.toggle("pp-bypassed", bypassed);
+    header.classList.toggle("pp-active",   anyActive);
+    header.classList.toggle("pp-bypassed", bypassed || !enabled);
   }
 
   const label = document.getElementById("pp-header-label");
-  if (label) label.textContent = bypassed ? "BYPASSED" : "ENHANCED";
+  if (label) {
+    label.textContent = !enabled ? "POST-PROC OFF" : bypassed ? "BYPASSED" : "ENHANCED";
+  }
+
+  const bypassBtn = document.getElementById("btn-pp-bypass");
+  if (bypassBtn) bypassBtn.style.display = enabled ? "" : "none";
 
   const bypassBtn = document.getElementById("btn-pp-bypass");
   if (bypassBtn) {
@@ -421,19 +426,20 @@ function applyPpState(pp, band) {
     v => v > 80 ? "good" : v > 40 ? "fair" : "weak",
     v => v + "%");
 
-  // Module rows
+  // Module rows (all show "off" when globally disabled or bypassed)
+  const on = enabled && !bypassed;
   const ms = mods.ms || {};
-  _setPpModuleRow("ms", ms.active && !bypassed, "active", "off");
+  _setPpModuleRow("ms",   on && ms.active,   "active", "off");
 
   const comp = mods.compress || {};
-  _setPpModuleRow("comp", comp.active && !bypassed, "active",
+  _setPpModuleRow("comp", on && comp.active, "active",
     "off", comp.gr_db != null ? comp.gr_db.toFixed(1) + " dB" : null);
 
   const exc = mods.exciter || {};
-  _setPpModuleRow("exc", exc.active && !bypassed, "active", "off");
+  _setPpModuleRow("exc",  on && exc.active,  "active", "off");
 
   const cn = mods.comfort_noise || {};
-  _setPpModuleRow("cn", cn.active && !bypassed, "active", "off");
+  _setPpModuleRow("cn",   on && cn.active,   "active", "off");
 }
 
 function _setPpBar(id, value, maxVal, colorFn, labelFn) {

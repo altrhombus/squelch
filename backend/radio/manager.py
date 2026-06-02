@@ -168,18 +168,12 @@ class RadioManager:
     # ------------------------------------------------------------------
 
     async def _signal_loop(self):
-        _prev = (-1, None, None)   # (bars, stereo, state) — track last broadcast
         try:
             while True:
                 await asyncio.sleep(1)
                 bars, stereo = self._estimate_signal()
                 self._meta.update_signal(bars, stereo)
-
-                # Only push a WebSocket frame when user-visible state changed.
-                cur = (bars, stereo, self._meta.state)
-                if cur != _prev:
-                    _prev = cur
-                    await self._meta.broadcast()
+                await self._meta.broadcast()
         except asyncio.CancelledError:
             pass
 

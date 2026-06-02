@@ -259,11 +259,16 @@ class RadioPipeline:
                     except Exception as e:
                         logger.warning("RDS error: %s", e)
                 pp = getattr(self._demod, "last_pp_state", None)
-                if pp is not None:
-                    loop = self._loop
-                    if loop and not loop.is_closed():
-                        loop.call_soon_threadsafe(
-                            self._meta.update_post_processing, pp.to_dict())
+                loop = self._loop
+                if loop and not loop.is_closed():
+                    pp_dict = pp.to_dict() if pp is not None else {
+                        "enabled": False, "bypass": False, "signal_pct": 100,
+                        "modules": {k: {"active": False}
+                                    for k in ("ms", "compress", "exciter",
+                                              "comfort_noise", "warmth_eq")},
+                    }
+                    loop.call_soon_threadsafe(
+                        self._meta.update_post_processing, pp_dict)
                 return encoder.encode(l, r)
 
             elif self._band in ("am", "scanner"):
