@@ -28,6 +28,7 @@ class MetadataState:
         self.hd_locked: bool = False
         self.stereo: bool = False
         self.has_art: bool = False
+        self.art_version: int = 0
         self.apple_music_url: Optional[str] = None
         # lifecycle state pushed to the frontend for status display
         self.state: str = "idle"           # idle | tuning | buffering | live
@@ -50,6 +51,7 @@ class MetadataState:
             "hd_locked": self.hd_locked,
             "stereo": self.stereo,
             "has_art": self.has_art,
+            "art_version": self.art_version,
             "art_url": "/art/current.jpg" if self.has_art else None,
             "apple_music_url": self.apple_music_url,
             "state": self.state,
@@ -72,6 +74,7 @@ class MetadataState:
         self.hd_locked = False
         self.stereo = False
         self.has_art = False
+        self.art_version = 0
         self.apple_music_url = None
         self._has_rtp = False
         self.state = "tuning"
@@ -151,6 +154,7 @@ class MetadataState:
                 os.makedirs(ART_DIR, exist_ok=True)
                 shutil.copy2(art_path, ART_PATH)
                 self.has_art = True
+                self.art_version += 1
                 changed = True
             except OSError as e:
                 logger.warning("Failed to copy cover art: %s", e)
@@ -228,6 +232,7 @@ class MetadataState:
                     try:
                         shutil.copy2(result["art_path"], ART_PATH)
                         self.has_art = True
+                        self.art_version += 1
                         self.apple_music_url = result.get("apple_music_url")
                         await self.broadcast()
                     except OSError as exc:

@@ -17,6 +17,7 @@ let wsReconnectTimer = null;
 // Art / metadata state
 let _prevHasArt = false;
 let _prevArtUrl = "";
+let _prevArtVersion = -1;
 let _prevHdLocked = false;
 let _currentAppleMusicUrl = null;
 
@@ -311,11 +312,13 @@ function applyMeta(m) {
     _historyRefreshTimer = setTimeout(loadHistory, 6000);
   }
 
-  // Cover art — crossfade only when has_art or art_url changes
+  // Cover art — crossfade when art appears, disappears, URL changes, or version bumps
   const nowHasArt = !!(m.has_art && m.art_url);
-  if (nowHasArt !== _prevHasArt || (nowHasArt && m.art_url !== _prevArtUrl)) {
+  const artVersion = m.art_version ?? -1;
+  if (nowHasArt !== _prevHasArt || (nowHasArt && m.art_url !== _prevArtUrl) || (nowHasArt && artVersion !== _prevArtVersion)) {
     _prevHasArt = nowHasArt;
     _prevArtUrl = m.art_url || "";
+    _prevArtVersion = artVersion;
     updateArt(nowHasArt ? m.art_url : "/static/placeholder.svg");
   }
 
