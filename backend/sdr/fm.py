@@ -319,10 +319,9 @@ class _PostProcessor:
     """
 
     def __init__(self, cfg: dict):
-        self._enabled   = bool(cfg.get("enabled", False))
-        self._threshold = float(cfg.get("signal_threshold", 1.0))
-        self.bypass     = False
-        self._state     = PostProcessingState()
+        self._enabled = bool(cfg.get("enabled", False))
+        self.bypass   = False
+        self._state   = PostProcessingState()
         self._state.enabled = self._enabled
 
         ms_cfg  = cfg.get("ms_processing",     {})
@@ -349,6 +348,15 @@ class _PostProcessor:
                          presence_db  = eq_cfg.get("presence_db",  -1.0),
                      ) if eq_cfg.get("enabled", False) else None)
 
+        # Per-module signal_threshold: how weak the blend must be before the
+        # effect engages.  1.0 = always apply (pure preference); lower values
+        # restrict the effect to marginal/weak signals only.
+        self._ms_thr  = float(ms_cfg.get( "signal_threshold", 1.0))
+        self._cmp_thr = float(cmp_cfg.get("signal_threshold", 0.8))
+        self._exc_thr = float(exc_cfg.get("signal_threshold", 1.0))
+        self._eq_thr  = float(eq_cfg.get( "signal_threshold", 1.0))
+        self._cn_thr  = float(cn_cfg.get( "signal_threshold", 1.0))
+
         self._cn_enabled = bool(cn_cfg.get("enabled", True))
         self._cn_level   = 10.0 ** (cn_cfg.get("level_dbfs", -78.0) / 20.0)
         if self._cn_enabled:
@@ -358,10 +366,12 @@ class _PostProcessor:
             self._cn_sos = self._cn_zi = None
         self._rng = np.random.default_rng()
 
-    def _eff(self, blend: float) -> float:
-        if blend >= self._threshold:
+    @staticmethod
+    def _eff(blend: float, threshold: float) -> float:
+        """Effective processing strength 0–1.  0 when blend >= threshold."""
+        if blend >= threshold:
             return 0.0
-        return min(1.0, (self._threshold - blend) / max(self._threshold, 1e-6))
+        return min(1.0, (threshold - blend) / max(threshold, 1e-6))
 
     def process(self, l32: np.ndarray, r32: np.ndarray, blend: float) -> tuple:
         self._state.signal_pct        = int(round(blend * 100))
@@ -372,15 +382,17 @@ class _PostProcessor:
         self._state.warmth_eq_active  = False
         if not self._enabled or self.bypass:
             return l32, r32
-        eff = self._eff(blend)
         if self._ms is not None:
+            eff = self._eff(blend, self._ms_thr)
             l32, r32 = self._ms.process(l32, r32, eff)
             self._state.ms_active = eff > 0.01
         if self._cmp is not None:
+            eff = self._eff(blend, self._cmp_thr)
             l32, r32 = self._cmp.process(l32, r32, eff)
             self._state.compress_active = eff > 0.01
             self._state.compress_gr_db  = self._cmp.last_gr_db
         if self._eq is not None:
+            eff = self._eff(blend, self._eq_thr)
             l32, r32 = self._eq.process(l32, r32, eff)
             self._state.warmth_eq_active = eff > 0.01
         return l32, r32
@@ -389,7 +401,7 @@ class _PostProcessor:
         self._state.exciter_active = False
         if not self._enabled or self.bypass or self._exc is None:
             return l32, r32
-        eff = self._eff(blend)
+        eff = self._eff(blend, self._exc_thr)
         if eff < 1e-3:
             return l32, r32
         self._state.exciter_active = True
@@ -399,11 +411,14 @@ class _PostProcessor:
         self._state.comfort_noise_active = False
         if not self._enabled or self.bypass or not self._cn_enabled:
             return l32, r32
+        eff = self._eff(blend, self._cn_thr)
+        if eff < 1e-3:
+            return l32, r32
         n      = len(l32)
         white  = self._rng.standard_normal(n).astype(np.float64)
         noise, self._cn_zi = sosfilt(self._cn_sos, white, zi=self._cn_zi)
         rms_n  = float(np.sqrt(np.mean(noise ** 2))) + 1e-10
-        level  = self._cn_level * (1.0 + 0.5 * (1.0 - min(blend, 1.0)))
+        level  = self._cn_level * (1.0 + 0.5 * (1.0 - min(blend, 1.0))) * eff
         noise  = (noise * (level / rms_n)).astype(np.float32)
         self._state.comfort_noise_active = True
         return (l32 + noise).astype(np.float32), (r32 + noise).astype(np.float32)
