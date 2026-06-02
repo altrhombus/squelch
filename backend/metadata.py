@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import time as _time
+from difflib import SequenceMatcher
 from typing import Optional
 from fastapi import WebSocket
 
@@ -244,27 +245,38 @@ class MetadataState:
         now = int(_time.time())
         db = await get_db()
         try:
-            # If we already have an entry for this exact song in the last 5
-            # minutes, update its station_name rather than inserting a duplicate.
-            # RDS PS arrives in 2-character segments and can take 30–60 seconds
-            # to stabilise; this lets later (more complete) names enrich the row.
+            # Fetch recent candidates and match in Python using fuzzy comparison.
+            # Exact SQL matching fails when RDS bit errors produce e.g.
+            # "The Devil Is iinthe Details" vs "The Devil Is in the Details" —
+            # both are the same song and should share one history row.
             async with db.execute(
-                """SELECT id FROM history
-                   WHERE artist = ? AND title = ?
-                     AND seen_at > ?
-                   ORDER BY seen_at DESC LIMIT 1""",
-                (self.artist, self.title, now - 300),
+                """SELECT id, artist, title FROM history
+                   WHERE seen_at > ?
+                   ORDER BY seen_at DESC LIMIT 20""",
+                (now - 300,),
             ) as cur:
-                recent = await cur.fetchone()
+                candidates = await cur.fetchall()
 
-            if recent:
+            matched_id = None
+            for row in candidates:
+                if (_rds_similar(row["artist"], self.artist)
+                        and _rds_similar(row["title"], self.title)):
+                    matched_id = row["id"]
+                    break
+
+            if matched_id:
+                # Update with the latest values — more RDS cycles means better
+                # error correction, so the newest data is the most accurate.
                 await db.execute(
-                    "UPDATE history SET station_name = ? WHERE id = ?",
-                    (self.station_name, recent["id"]),
+                    """UPDATE history
+                       SET station_name = ?, artist = ?, title = ?
+                       WHERE id = ?""",
+                    (self.station_name, self.artist, self.title, matched_id),
                 )
             else:
                 await db.execute(
-                    """INSERT INTO history (station_name, artist, title, pty, frequency, band, seen_at)
+                    """INSERT INTO history
+                           (station_name, artist, title, pty, frequency, band, seen_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (self.station_name, self.artist, self.title, self.pty,
                      self.frequency, self.band, now),
@@ -275,6 +287,22 @@ class MetadataState:
             logger.warning("Failed to save history: %s", e)
         finally:
             await db.close()
+
+
+def _rds_similar(a: Optional[str], b: Optional[str], threshold: float = 0.82) -> bool:
+    """True when two RDS text fields are similar enough to be the same content.
+
+    Uses SequenceMatcher ratio to tolerate bit-flip corruption that replaces,
+    inserts, or drops a handful of characters in the artist or title.
+    Threshold 0.82 accepts e.g. 'Boards of Canada ⬛G' ≈ 'Boards of Canada'
+    and 'The Devil Is iinthe Details' ≈ 'The Devil Is in the Details' while
+    rejecting genuinely different strings.
+    """
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio() >= threshold
 
 
 def _parse_rt(rt: str) -> tuple[Optional[str], Optional[str]]:
