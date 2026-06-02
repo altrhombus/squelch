@@ -65,11 +65,11 @@ _PHYS_SCALE   = 200.0
 # Minimum Wiener gain per bin.  Prevents gain from collapsing to near-zero at
 # noise-only frequencies, which creates a large per-frame spectral contrast
 # between formant bins (gain≈1) and inter-formant bins (gain→0) that sounds
-# "watery" on voices, especially on weak stations.  0.20 = −14 dB floor;
-# reduces worst-case contrast from ~20:1 to ~5:1 without audible noise increase.
+# "watery" on voices, especially on weak stations.  0.24 = −12 dB floor;
+# reduces worst-case contrast from ~20:1 to ~4:1 without audible noise increase.
 # Applied to the OUTPUT gain only — DD state (prev_gain) retains the unfloored
 # Wiener value so the temporal smoother's feedback is not distorted.
-_WIENER_FLOOR = 0.25
+_WIENER_FLOOR = 0.24
 
 # ITU-R BS.1770-4 K-weighting filter — two cascaded biquads, pre-computed for 48 kHz.
 # Stage 1: head-acoustics pre-filter (high-shelf boost above ~1 kHz).

@@ -179,7 +179,7 @@ All constants below are in `backend/sdr/fm.py` (module-level) or `backend/sdr/pi
 | `_PHYS_SCALE` | `200.0` | Converts discriminator noise RMS² to per-STFT-bin power for the physics floor. Analytical value is 307; 200 is conservative. | Raise toward `250` if the floor seems too weak on very noisy stations. Lower toward `150` if over-subtraction artefacts appear. |
 | `_MINSTAT_FRAMES` | `128` | Length of MinStat circular buffer (128 × 10.7 ms ≈ 1.4 s of history). | Don't raise above `256` — the axis=0 min scan cost was the source of USB callback overflows at 256. Lower reduces memory but makes the estimate noisier. |
 | `alpha_dd` | `0.92` | Decision-directed Wiener smoother time constant (τ ≈ 250 ms). Lower = faster gain response. | Lower toward `0.88` if the Wiener sounds sluggish on transients. Don't go below `0.88` — sibilant offset artefacts appear (tested). |
-| `_WIENER_FLOOR` | `0.20` | Minimum per-bin Wiener gain (−14 dB floor). Prevents inter-formant bins from collapsing to near-zero, which causes a "watery" voice quality on weak stations. | Raise toward `0.30` if voices still sound watery (less noise reduction, less modulation). Lower toward `0.10` for more aggressive noise removal on moderate stations. |
+| `_WIENER_FLOOR` | `0.24` | Minimum per-bin Wiener gain (−12 dB floor). Prevents inter-formant bins from collapsing to near-zero, which causes a "watery" voice quality on weak stations. | Raise toward `0.30` if voices still sound watery (less noise reduction, less modulation). Lower toward `0.10` for more aggressive noise removal on moderate stations. |
 
 ### Stereo blend
 
