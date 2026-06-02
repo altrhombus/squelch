@@ -30,6 +30,7 @@ class MetadataState:
         # lifecycle state pushed to the frontend for status display
         self.state: str = "idle"           # idle | tuning | buffering | live
         self._last_history_key: Optional[str] = None
+        self._history_save_task: Optional[asyncio.Task] = None
         self._websockets: set[WebSocket] = set()
 
     def to_dict(self) -> dict:
@@ -86,7 +87,7 @@ class MetadataState:
             changed = True
         if changed:
             asyncio.ensure_future(self.broadcast())
-            asyncio.ensure_future(self.save_history())
+            self._debounce_history_save()
 
     def update_nrsc5(
         self,
@@ -127,7 +128,7 @@ class MetadataState:
                 logger.warning("Failed to copy cover art: %s", e)
         if changed:
             asyncio.ensure_future(self.broadcast())
-            asyncio.ensure_future(self.save_history())
+            self._debounce_history_save()
 
     def update_signal(self, bars: int, stereo: bool = None):
         self.signal_bars = max(0, min(5, bars))
@@ -172,6 +173,24 @@ class MetadataState:
             except Exception:
                 dead.add(ws)
         self._websockets -= dead
+
+    def _debounce_history_save(self):
+        """Cancel any pending save and restart the 4-second stability window.
+
+        RDS RadioText arrives incrementally and can contain transient errors.
+        We wait until no new changes arrive for 4 seconds before persisting,
+        which lets partial titles and self-correcting corruption settle.
+        """
+        if self._history_save_task and not self._history_save_task.done():
+            self._history_save_task.cancel()
+        self._history_save_task = asyncio.ensure_future(self._delayed_save())
+
+    async def _delayed_save(self):
+        try:
+            await asyncio.sleep(4)
+            await self.save_history()
+        except asyncio.CancelledError:
+            pass
 
     async def save_history(self):
         key = f"{self.artist}|{self.title}|{self.station_name}"

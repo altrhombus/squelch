@@ -321,7 +321,7 @@ function applyMeta(m) {
   if (trackKey !== _prevTrackKey && (m.artist || m.title)) {
     _prevTrackKey = trackKey;
     clearTimeout(_historyRefreshTimer);
-    _historyRefreshTimer = setTimeout(loadHistory, 1500);
+    _historyRefreshTimer = setTimeout(loadHistory, 6000);
   }
 
   // Cover art — crossfade only when has_art or art_url changes
