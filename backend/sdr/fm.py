@@ -71,6 +71,18 @@ _PHYS_SCALE   = 200.0
 # Wiener value so the temporal smoother's feedback is not distorted.
 _WIENER_FLOOR = 0.24
 
+# Asymmetric per-bin temporal smoother applied to the final output gain.
+# Fricatives ("S", "F") have inherently micro-modulated energy: their amplitude
+# is never perfectly constant, so the DD forward path (1-α)·max(γ-1,0) reacts
+# to every STFT frame's SNR micro-dip and drives the gain up and down at the
+# ~93 Hz hop rate — audible as a warble on sibilant consonants.
+# Fast RISE (τ≈9 ms, 1 frame) preserves consonant onset fidelity.
+# Slow FALL (τ≈30 ms, ~3 frames) smooths the inter-frame gain oscillation.
+# The DD state (prev_gain/prev_gamma) still tracks the raw unfloored Wiener
+# gain so the temporal smoother's feedback loop is not affected.
+_GAIN_SMOOTH_RISE = 0.3   # α for rising gain  — τ = -hop/sr / ln(0.3) ≈  9 ms
+_GAIN_SMOOTH_FALL = 0.7   # α for falling gain — τ = -hop/sr / ln(0.7) ≈ 30 ms
+
 # ITU-R BS.1770-4 K-weighting filter — two cascaded biquads, pre-computed for 48 kHz.
 # Stage 1: head-acoustics pre-filter (high-shelf boost above ~1 kHz).
 # Stage 2: RLB weighting (second-order highpass, de-weights LF where ears are less sensitive).
@@ -159,6 +171,10 @@ class _SpectralSubtractor:
         self._prev_gain  = np.ones(_n_bins, dtype=np.float64)
         self._prev_gamma = np.ones(_n_bins, dtype=np.float64)
 
+        # Per-bin output gain smoother (asymmetric IIR — see _GAIN_SMOOTH_RISE/FALL).
+        # Separate from _prev_gain so the DD feedback loop is not affected.
+        self._gain_smooth = np.ones(_n_bins, dtype=np.float64)
+
         # Subtraction mask: flat 1.0 across 0-15 kHz (FM audio bandwidth),
         # linear taper to 0 at 16 kHz.  Bins above the FM bandwidth have no
         # programme content; forcing gain=1 there avoids erratic Wiener
@@ -243,8 +259,15 @@ class _SpectralSubtractor:
             g_s2       = g_s.copy()
             g_s2[1:-1] = 0.25 * g_s[:-2]    + 0.5 * g_s[1:-1]    + 0.25 * g_s[2:]
 
+            # Asymmetric per-bin temporal smoother on the output gain.
+            # Fast attack preserves sibilant onset; slow fall smooths the
+            # hop-rate gain micro-oscillation that warbles on "S"/"F" consonants.
+            _a = np.where(g_s2 > self._gain_smooth, _GAIN_SMOOTH_RISE, _GAIN_SMOOTH_FALL)
+            self._gain_smooth = _a * self._gain_smooth + (1.0 - _a) * g_s2
+            g_out = self._gain_smooth
+
             # Where mask=0 (above FM audio bandwidth) force gain to 1.
-            X_out = X * (self._sub_mask * g_s2 + (1.0 - self._sub_mask))
+            X_out = X * (self._sub_mask * g_out + (1.0 - self._sub_mask))
 
             frame_out                          = np.fft.irfft(X_out, n=self._n_fft) * self._win
             self._ola                         += frame_out
