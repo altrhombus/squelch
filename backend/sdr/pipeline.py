@@ -263,9 +263,13 @@ class RadioPipeline:
                 if loop and not loop.is_closed():
                     pp_dict = pp.to_dict() if pp is not None else {
                         "enabled": False, "bypass": False, "signal_pct": 100,
-                        "modules": {k: {"active": False}
-                                    for k in ("ms", "compress", "exciter",
-                                              "comfort_noise", "warmth_eq")},
+                        "modules": {
+                            "ms":            {"active": False, "enabled": False},
+                            "compress":      {"active": False, "enabled": False, "gr_db": 0.0},
+                            "exciter":       {"active": False, "enabled": False},
+                            "comfort_noise": {"active": False, "enabled": False},
+                            "warmth_eq":     {"active": False, "enabled": False},
+                        },
                     }
                     loop.call_soon_threadsafe(
                         self._meta.update_post_processing, pp_dict)

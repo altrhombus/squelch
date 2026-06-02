@@ -27,6 +27,28 @@ logger = logging.getLogger(__name__)
 _AVIATION_LO = 118e6
 _AVIATION_HI = 137e6
 
+# Mapping from internal PP module key → settings.yaml config key
+_PP_MOD_TO_CFG = {
+    "ms":            "ms_processing",
+    "compress":      "multiband_compress",
+    "exciter":       "exciter",
+    "comfort_noise": "comfort_noise",
+    "warmth_eq":     "warmth_eq",
+}
+
+
+def _apply_pp_patch(pp_cfg: dict, patch: dict):
+    """Apply a patch dict (using internal module keys) to the raw config dict."""
+    if "enabled" in patch:
+        pp_cfg["enabled"] = bool(patch["enabled"])
+    for mod_key, mod_patch in patch.get("modules", {}).items():
+        cfg_key = _PP_MOD_TO_CFG.get(mod_key, mod_key)
+        section = pp_cfg.setdefault(cfg_key, {})
+        if "enabled" in mod_patch:
+            section["enabled"] = bool(mod_patch["enabled"])
+        if "signal_threshold" in mod_patch:
+            section["signal_threshold"] = float(mod_patch["signal_threshold"])
+
 
 class RadioManager:
     def __init__(self, config: dict, metadata: MetadataState, streaming: StreamingManager):
@@ -118,6 +140,23 @@ class RadioManager:
         """Toggle post-processing bypass at runtime for A/B comparison."""
         if self._pipeline and self._pipeline._demod is not None:
             self._pipeline._demod.pp_bypass = bypass
+
+    def get_pp_config(self) -> dict:
+        if self._pipeline and self._pipeline._demod is not None:
+            pp = getattr(self._pipeline._demod, "_pp", None)
+            if pp is not None:
+                return pp.get_config()
+        return {"enabled": False, "modules": {}}
+
+    def patch_pp_config(self, patch: dict) -> dict:
+        if self._pipeline and self._pipeline._demod is not None:
+            pp = getattr(self._pipeline._demod, "_pp", None)
+            if pp is not None:
+                pp.patch_config(patch)
+                # Keep cached config in sync so retuning preserves session state
+                _apply_pp_patch(self._pp_cfg, patch)
+                return pp.get_config()
+        return {"enabled": False, "modules": {}}
 
     async def _start_pipeline(self, freq_hz: float, band: str, gain, deemph: int, stereo_mode: str = "auto"):
         from ..sdr.pipeline import RadioPipeline

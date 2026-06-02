@@ -851,7 +851,7 @@ h2 {
   transition: color 0.3s;
 }
 #pp-header:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-#pp-header.pp-active  { color: #e09020; }
+#pp-header.pp-active   { color: #e09020; }
 #pp-header.pp-bypassed { color: #555; }
 
 #pp-header-label { flex: 1; }
@@ -860,7 +860,6 @@ h2 {
 #btn-pp-bypass {
   font-size: 10px;
   padding: 2px 8px;
-  margin-left: auto;
 }
 
 #pp-body {
@@ -870,11 +869,16 @@ h2 {
   gap: 6px;
 }
 
+/* 4-column rows: toggle | label | bar | value */
 .pp-row {
   display: grid;
-  grid-template-columns: 68px 1fr 56px;
+  grid-template-columns: 30px 68px 1fr 56px;
   align-items: center;
   gap: 8px;
+}
+/* Signal row has no toggle — label spans first two columns */
+.pp-row-signal {
+  grid-template-columns: 98px 1fr 56px;
 }
 
 .pp-label {
@@ -901,6 +905,7 @@ h2 {
 .pp-bar.fair     { background: #e09020; }
 .pp-bar.weak     { background: #e04040; }
 .pp-bar.inactive { background: var(--bar-off); }
+.pp-bar.disabled { background: var(--bar-off); opacity: 0.4; }
 
 .pp-val {
   font-size: 11px;
@@ -908,6 +913,41 @@ h2 {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* Toggle switch */
+.pp-toggle {
+  position: relative;
+  display: inline-block;
+  width: 28px;
+  height: 16px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.pp-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+.pp-slider {
+  position: absolute;
+  inset: 0;
+  background: #3a3a3a;
+  border-radius: 8px;
+  transition: background 0.2s;
+}
+.pp-slider::before {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  left: 2px;
+  top: 2px;
+  background: #888;
+  border-radius: 50%;
+  transition: transform 0.2s, background 0.2s;
+}
+.pp-toggle input:checked + .pp-slider { background: #8a4800; }
+.pp-toggle input:checked + .pp-slider::before {
+  transform: translateX(12px);
+  background: var(--accent);
+}
+.pp-toggle:focus-within .pp-slider { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* =====================================================
    Light mode

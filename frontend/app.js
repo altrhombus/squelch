@@ -383,21 +383,38 @@ function toggleEl(el, show) {
 
 let _ppBypass = false;
 
+// Apply server config to toggle checkbox states (called on load + after patch)
+function _syncPpToggles(cfg) {
+  if (!cfg) return;
+  const master = document.getElementById("pp-master-toggle");
+  if (master) master.checked = !!cfg.enabled;
+  const mods = cfg.modules || {};
+  document.querySelectorAll(".pp-mod-toggle").forEach(cb => {
+    const m = cb.dataset.module;
+    if (m && mods[m] != null) cb.checked = !!mods[m].enabled;
+  });
+}
+
+async function loadPpConfig() {
+  const cfg = await api("GET", "/post-processing/config");
+  if (!cfg || cfg.error) return;
+  _syncPpToggles(cfg);
+}
+
 function applyPpState(pp, band) {
   const panel = document.getElementById("pp-panel");
   if (!panel) return;
 
-  // Only show on FM band
   if (!pp || band !== "fm") {
     panel.classList.add("hidden");
     return;
   }
 
-  const enabled    = pp.enabled;
-  const bypassed   = pp.bypass || _ppBypass;
-  const signalPct  = pp.signal_pct ?? 100;
-  const mods       = pp.modules || {};
-  const anyActive  = enabled && !bypassed && Object.values(mods).some(m => m.active);
+  const enabled   = pp.enabled;
+  const bypassed  = pp.bypass || _ppBypass;
+  const signalPct = pp.signal_pct ?? 100;
+  const mods      = pp.modules || {};
+  const anyActive = enabled && !bypassed && Object.values(mods).some(m => m.active);
 
   panel.classList.remove("hidden");
 
@@ -408,9 +425,7 @@ function applyPpState(pp, band) {
   }
 
   const label = document.getElementById("pp-header-label");
-  if (label) {
-    label.textContent = !enabled ? "POST-PROC OFF" : bypassed ? "BYPASSED" : "ENHANCED";
-  }
+  if (label) label.textContent = !enabled ? "OFF" : bypassed ? "BYPASSED" : "ENHANCED";
 
   const bypassBtn = document.getElementById("btn-pp-bypass");
   if (bypassBtn) {
@@ -419,25 +434,30 @@ function applyPpState(pp, band) {
     bypassBtn.setAttribute("aria-pressed", String(bypassed));
   }
 
+  // Sync toggle checkboxes to server state (handles retune / external changes)
+  _syncPpToggles({ enabled, modules: Object.fromEntries(
+    Object.entries(mods).map(([k, v]) => [k, { enabled: v.enabled }])
+  )});
+
   // Signal bar
   _setPpBar("signal", signalPct, 100,
     v => v > 80 ? "good" : v > 40 ? "fair" : "weak",
     v => v + "%");
 
-  // Module rows (all show "off" when globally disabled or bypassed)
+  // Module rows: active only when master is on, not bypassed, and module enabled
   const on = enabled && !bypassed;
-  const ms = mods.ms || {};
-  _setPpModuleRow("ms",   on && ms.active,   "active", "off");
+  const ms   = mods.ms            || {};
+  const comp = mods.compress      || {};
+  const exc  = mods.exciter       || {};
+  const cn   = mods.comfort_noise || {};
+  const weq  = mods.warmth_eq     || {};
 
-  const comp = mods.compress || {};
-  _setPpModuleRow("comp", on && comp.active, "active",
+  _setPpModuleRow("ms",   on && ms.active,   ms.enabled,   "active", "off");
+  _setPpModuleRow("comp", on && comp.active, comp.enabled, "active",
     "off", comp.gr_db != null ? comp.gr_db.toFixed(1) + " dB" : null);
-
-  const exc = mods.exciter || {};
-  _setPpModuleRow("exc",  on && exc.active,  "active", "off");
-
-  const cn = mods.comfort_noise || {};
-  _setPpModuleRow("cn",   on && cn.active,   "active", "off");
+  _setPpModuleRow("exc",  on && exc.active,  exc.enabled,  "active", "off");
+  _setPpModuleRow("cn",   on && cn.active,   cn.enabled,   "active", "off");
+  _setPpModuleRow("weq",  on && weq.active,  weq.enabled,  "active", "off");
 }
 
 function _setPpBar(id, value, maxVal, colorFn, labelFn) {
@@ -450,13 +470,13 @@ function _setPpBar(id, value, maxVal, colorFn, labelFn) {
   val.textContent = labelFn(value);
 }
 
-function _setPpModuleRow(id, active, activeLabel, offLabel, extraLabel) {
+function _setPpModuleRow(id, active, modEnabled, activeLabel, offLabel, extraLabel) {
   const bar = document.getElementById(`pp-bar-${id}`);
   const val = document.getElementById(`pp-val-${id}`);
   if (!bar || !val) return;
   bar.style.width = active ? "100%" : "0%";
-  bar.className   = "pp-bar " + (active ? "good" : "inactive");
-  val.textContent = active ? (extraLabel || activeLabel) : offLabel;
+  bar.className   = "pp-bar " + (active ? "good" : modEnabled ? "inactive" : "disabled");
+  val.textContent = active ? (extraLabel || activeLabel) : (modEnabled ? offLabel : "—");
 }
 
 // Collapse/expand panel body
@@ -477,9 +497,22 @@ function _togglePpPanel() {
 }
 
 document.getElementById("btn-pp-bypass")?.addEventListener("click", async (e) => {
-  e.stopPropagation();   // don't trigger panel expand
+  e.stopPropagation();
   _ppBypass = !_ppBypass;
   await api("POST", "/post-processing/bypass", { bypass: _ppBypass });
+});
+
+document.getElementById("pp-master-toggle")?.addEventListener("change", async (e) => {
+  e.stopPropagation();
+  await api("PATCH", "/post-processing/config", { enabled: e.target.checked });
+});
+
+document.querySelectorAll(".pp-mod-toggle").forEach(cb => {
+  cb.addEventListener("change", async (e) => {
+    e.stopPropagation();
+    await api("PATCH", "/post-processing/config",
+      { modules: { [cb.dataset.module]: { enabled: cb.checked } } });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -993,6 +1026,7 @@ connectWs();
 loadPresets();
 loadRecordings();
 loadHistory();
+loadPpConfig();
 
 api("GET", "/record/status").then(s => {
   if (s.recording) {

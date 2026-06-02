@@ -195,6 +195,26 @@ async def pp_bypass(req: PpBypassRequest):
     return {"bypass": req.bypass}
 
 
+@app.get("/post-processing/config")
+async def get_pp_config():
+    return radio.get_pp_config()
+
+
+class PpConfigPatch(BaseModel):
+    enabled: Optional[bool] = None
+    modules: Optional[dict] = None
+
+
+@app.patch("/post-processing/config")
+async def patch_pp_config(req: PpConfigPatch):
+    patch: dict = {}
+    if req.enabled is not None:
+        patch["enabled"] = req.enabled
+    if req.modules:
+        patch["modules"] = req.modules
+    return radio.patch_pp_config(patch)
+
+
 @app.get("/stream/url")
 async def stream_url():
     return {"stream_url": "/stream", "content_type": "audio/aac"}

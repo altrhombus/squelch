@@ -63,37 +63,72 @@
     <!-- Post-processing meter panel (collapsible, FM only) -->
     <div id="pp-panel" class="hidden">
       <div id="pp-header" role="button" tabindex="0" aria-expanded="false"
-           aria-controls="pp-body" title="Post-processing status">
+           aria-controls="pp-body" title="Expand post-processing details">
+        <label class="pp-toggle" title="Enable post-processing" id="pp-master-wrap"
+               onclick="event.stopPropagation()">
+          <input type="checkbox" id="pp-master-toggle" aria-label="Enable post-processing">
+          <span class="pp-slider"></span>
+        </label>
         <span id="pp-header-label">ENHANCED</span>
         <button id="btn-pp-bypass" class="btn-small" aria-pressed="false"
                 title="Bypass all post-processing for A/B comparison">Bypass</button>
         <span id="pp-chevron" aria-hidden="true">&#9660;</span>
       </div>
       <div id="pp-body" class="hidden" role="region" aria-label="Post-processing details">
-        <div class="pp-row">
+        <div class="pp-row pp-row-signal">
           <span class="pp-label">Signal</span>
           <div class="pp-bar-wrap"><div id="pp-bar-signal" class="pp-bar"></div></div>
           <span id="pp-val-signal" class="pp-val">—</span>
         </div>
         <div class="pp-row">
+          <label class="pp-toggle" title="Enable M/S noise reduction">
+            <input type="checkbox" class="pp-mod-toggle" data-module="ms"
+                   aria-label="Enable M/S noise reduction">
+            <span class="pp-slider"></span>
+          </label>
           <span class="pp-label">M/S NR</span>
           <div class="pp-bar-wrap"><div id="pp-bar-ms" class="pp-bar"></div></div>
           <span id="pp-val-ms" class="pp-val">—</span>
         </div>
         <div class="pp-row">
+          <label class="pp-toggle" title="Enable multiband compressor">
+            <input type="checkbox" class="pp-mod-toggle" data-module="compress"
+                   aria-label="Enable multiband compressor">
+            <span class="pp-slider"></span>
+          </label>
           <span class="pp-label">Compress</span>
           <div class="pp-bar-wrap"><div id="pp-bar-comp" class="pp-bar"></div></div>
           <span id="pp-val-comp" class="pp-val">—</span>
         </div>
         <div class="pp-row">
+          <label class="pp-toggle" title="Enable harmonic exciter">
+            <input type="checkbox" class="pp-mod-toggle" data-module="exciter"
+                   aria-label="Enable harmonic exciter">
+            <span class="pp-slider"></span>
+          </label>
           <span class="pp-label">Exciter</span>
           <div class="pp-bar-wrap"><div id="pp-bar-exc" class="pp-bar"></div></div>
           <span id="pp-val-exc" class="pp-val">—</span>
         </div>
         <div class="pp-row">
+          <label class="pp-toggle" title="Enable comfort noise">
+            <input type="checkbox" class="pp-mod-toggle" data-module="comfort_noise"
+                   aria-label="Enable comfort noise">
+            <span class="pp-slider"></span>
+          </label>
           <span class="pp-label">Comfort</span>
           <div class="pp-bar-wrap"><div id="pp-bar-cn" class="pp-bar"></div></div>
           <span id="pp-val-cn" class="pp-val">—</span>
+        </div>
+        <div class="pp-row">
+          <label class="pp-toggle" title="Enable warmth EQ">
+            <input type="checkbox" class="pp-mod-toggle" data-module="warmth_eq"
+                   aria-label="Enable warmth EQ">
+            <span class="pp-slider"></span>
+          </label>
+          <span class="pp-label">Warmth EQ</span>
+          <div class="pp-bar-wrap"><div id="pp-bar-weq" class="pp-bar"></div></div>
+          <span id="pp-val-weq" class="pp-val">—</span>
         </div>
       </div>
     </div>

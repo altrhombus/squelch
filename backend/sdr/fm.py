@@ -120,10 +120,6 @@ def _rbj_peaking(freq: float, gain_db: float, q: float = 2.0) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class PostProcessingState:
-    __slots__ = ('enabled', 'bypass', 'signal_pct',
-                 'ms_active', 'compress_active', 'compress_gr_db',
-                 'exciter_active', 'comfort_noise_active', 'warmth_eq_active')
-
     def __init__(self):
         self.enabled              = False
         self.bypass               = False
@@ -134,19 +130,26 @@ class PostProcessingState:
         self.exciter_active       = False
         self.comfort_noise_active = False
         self.warmth_eq_active     = False
+        self.modules_enabled: dict = {}   # snapshotted from _mod_enabled each block
 
     def to_dict(self) -> dict:
+        me = self.modules_enabled
         return {
             "enabled":    self.enabled,
             "bypass":     self.bypass,
             "signal_pct": self.signal_pct,
             "modules": {
-                "ms":            {"active": self.ms_active},
+                "ms":            {"active": self.ms_active,
+                                  "enabled": me.get("ms", True)},
                 "compress":      {"active": self.compress_active,
-                                  "gr_db": round(self.compress_gr_db, 1)},
-                "exciter":       {"active": self.exciter_active},
-                "comfort_noise": {"active": self.comfort_noise_active},
-                "warmth_eq":     {"active": self.warmth_eq_active},
+                                  "gr_db":  round(self.compress_gr_db, 1),
+                                  "enabled": me.get("compress", True)},
+                "exciter":       {"active": self.exciter_active,
+                                  "enabled": me.get("exciter", False)},
+                "comfort_noise": {"active": self.comfort_noise_active,
+                                  "enabled": me.get("comfort_noise", True)},
+                "warmth_eq":     {"active": self.warmth_eq_active,
+                                  "enabled": me.get("warmth_eq", False)},
             },
         }
 
@@ -330,78 +333,117 @@ class _PostProcessor:
         cn_cfg  = cfg.get("comfort_noise",      {})
         eq_cfg  = cfg.get("warmth_eq",          {})
 
-        self._ms  = (_MsNrProcessor(ms_cfg.get("side_nr_strength", 0.3))
-                     if ms_cfg.get("enabled", True) else None)
-        self._cmp = (_MultibandCompressor(
-                         ratio        = cmp_cfg.get("ratio",        1.8),
-                         attack_ms    = cmp_cfg.get("attack_ms",    20.0),
-                         release_ms   = cmp_cfg.get("release_ms",   200.0),
-                         threshold_db = cmp_cfg.get("threshold_db", -18.0),
-                     ) if cmp_cfg.get("enabled", True) else None)
-        self._exc = (_HarmonicExciter(
-                         mix_db    = exc_cfg.get("mix_db",    -18.0),
-                         freq_low  = exc_cfg.get("freq_low",  3_000),
-                         freq_high = exc_cfg.get("freq_high", 8_000),
-                     ) if exc_cfg.get("enabled", False) else None)
-        self._eq  = (_WarmthEQ(
-                         low_shelf_db = eq_cfg.get("low_shelf_db", 1.5),
-                         presence_db  = eq_cfg.get("presence_db",  -1.0),
-                     ) if eq_cfg.get("enabled", False) else None)
+        # Always instantiate all module objects so runtime enable/disable
+        # works without filter-state transients from cold-start construction.
+        self._ms  = _MsNrProcessor(ms_cfg.get("side_nr_strength", 0.3))
+        self._cmp = _MultibandCompressor(
+                        ratio        = cmp_cfg.get("ratio",        1.8),
+                        attack_ms    = cmp_cfg.get("attack_ms",    20.0),
+                        release_ms   = cmp_cfg.get("release_ms",   200.0),
+                        threshold_db = cmp_cfg.get("threshold_db", -18.0),
+                    )
+        self._exc = _HarmonicExciter(
+                        mix_db    = exc_cfg.get("mix_db",    -18.0),
+                        freq_low  = exc_cfg.get("freq_low",  3_000),
+                        freq_high = exc_cfg.get("freq_high", 8_000),
+                    )
+        self._eq  = _WarmthEQ(
+                        low_shelf_db = eq_cfg.get("low_shelf_db", 1.5),
+                        presence_db  = eq_cfg.get("presence_db",  -1.0),
+                    )
 
-        # Per-module signal_threshold: how weak the blend must be before the
-        # effect engages.  1.0 = always apply (pure preference); lower values
-        # restrict the effect to marginal/weak signals only.
-        self._ms_thr  = float(ms_cfg.get( "signal_threshold", 1.0))
-        self._cmp_thr = float(cmp_cfg.get("signal_threshold", 0.8))
-        self._exc_thr = float(exc_cfg.get("signal_threshold", 1.0))
-        self._eq_thr  = float(eq_cfg.get( "signal_threshold", 1.0))
-        self._cn_thr  = float(cn_cfg.get( "signal_threshold", 1.0))
+        # Per-module enabled flags — toggled at runtime from the UI.
+        self._mod_enabled: dict = {
+            'ms':            bool(ms_cfg.get( "enabled", True)),
+            'compress':      bool(cmp_cfg.get("enabled", True)),
+            'exciter':       bool(exc_cfg.get("enabled", False)),
+            'comfort_noise': bool(cn_cfg.get( "enabled", True)),
+            'warmth_eq':     bool(eq_cfg.get( "enabled", False)),
+        }
 
-        self._cn_enabled = bool(cn_cfg.get("enabled", True))
-        self._cn_level   = 10.0 ** (cn_cfg.get("level_dbfs", -78.0) / 20.0)
-        if self._cn_enabled:
-            self._cn_sos = butter(2, 80, 'highpass', fs=_AUDIO_RATE, output='sos')
-            self._cn_zi  = _zero_zi(self._cn_sos)
-        else:
-            self._cn_sos = self._cn_zi = None
-        self._rng = np.random.default_rng()
+        # Per-module signal thresholds — updatable at runtime.
+        self._thresholds: dict = {
+            'ms':            float(ms_cfg.get( "signal_threshold", 1.0)),
+            'compress':      float(cmp_cfg.get("signal_threshold", 0.8)),
+            'exciter':       float(exc_cfg.get("signal_threshold", 1.0)),
+            'comfort_noise': float(cn_cfg.get( "signal_threshold", 1.0)),
+            'warmth_eq':     float(eq_cfg.get( "signal_threshold", 1.0)),
+        }
+
+        self._cn_level = 10.0 ** (cn_cfg.get("level_dbfs", -78.0) / 20.0)
+        self._cn_sos   = butter(2, 80, 'highpass', fs=_AUDIO_RATE, output='sos')
+        self._cn_zi    = _zero_zi(self._cn_sos)
+        self._rng      = np.random.default_rng()
+
+    # ---- Runtime config (called safely from asyncio via call_soon_threadsafe) ----
+
+    def set_enabled(self, enabled: bool):
+        self._enabled = bool(enabled)
+        self._state.enabled = self._enabled
+
+    def set_module_enabled(self, module: str, enabled: bool):
+        if module in self._mod_enabled:
+            self._mod_enabled[module] = bool(enabled)
+
+    def set_module_threshold(self, module: str, threshold: float):
+        if module in self._thresholds:
+            self._thresholds[module] = max(0.0, min(1.0, float(threshold)))
+
+    def get_config(self) -> dict:
+        return {
+            "enabled": self._enabled,
+            "modules": {
+                k: {"enabled": self._mod_enabled[k],
+                    "signal_threshold": self._thresholds[k]}
+                for k in self._mod_enabled
+            },
+        }
+
+    def patch_config(self, patch: dict):
+        if "enabled" in patch:
+            self.set_enabled(patch["enabled"])
+        for mod, mod_patch in patch.get("modules", {}).items():
+            if "enabled" in mod_patch:
+                self.set_module_enabled(mod, mod_patch["enabled"])
+            if "signal_threshold" in mod_patch:
+                self.set_module_threshold(mod, mod_patch["signal_threshold"])
 
     @staticmethod
     def _eff(blend: float, threshold: float) -> float:
-        """Effective processing strength 0–1.  0 when blend >= threshold."""
         if blend >= threshold:
             return 0.0
         return min(1.0, (threshold - blend) / max(threshold, 1e-6))
 
     def process(self, l32: np.ndarray, r32: np.ndarray, blend: float) -> tuple:
-        self._state.signal_pct        = int(round(blend * 100))
-        self._state.bypass            = self.bypass
-        self._state.ms_active         = False
-        self._state.compress_active   = False
-        self._state.compress_gr_db    = 0.0
-        self._state.warmth_eq_active  = False
+        self._state.signal_pct       = int(round(blend * 100))
+        self._state.bypass           = self.bypass
+        self._state.ms_active        = False
+        self._state.compress_active  = False
+        self._state.compress_gr_db   = 0.0
+        self._state.warmth_eq_active = False
+        self._state.modules_enabled  = dict(self._mod_enabled)
         if not self._enabled or self.bypass:
             return l32, r32
-        if self._ms is not None:
-            eff = self._eff(blend, self._ms_thr)
+        if self._mod_enabled['ms']:
+            eff = self._eff(blend, self._thresholds['ms'])
             l32, r32 = self._ms.process(l32, r32, eff)
             self._state.ms_active = eff > 0.01
-        if self._cmp is not None:
-            eff = self._eff(blend, self._cmp_thr)
+        if self._mod_enabled['compress']:
+            eff = self._eff(blend, self._thresholds['compress'])
             l32, r32 = self._cmp.process(l32, r32, eff)
             self._state.compress_active = eff > 0.01
             self._state.compress_gr_db  = self._cmp.last_gr_db
-        if self._eq is not None:
-            eff = self._eff(blend, self._eq_thr)
+        if self._mod_enabled['warmth_eq']:
+            eff = self._eff(blend, self._thresholds['warmth_eq'])
             l32, r32 = self._eq.process(l32, r32, eff)
             self._state.warmth_eq_active = eff > 0.01
         return l32, r32
 
     def pre_limit(self, l32: np.ndarray, r32: np.ndarray, blend: float) -> tuple:
         self._state.exciter_active = False
-        if not self._enabled or self.bypass or self._exc is None:
+        if not self._enabled or self.bypass or not self._mod_enabled['exciter']:
             return l32, r32
-        eff = self._eff(blend, self._exc_thr)
+        eff = self._eff(blend, self._thresholds['exciter'])
         if eff < 1e-3:
             return l32, r32
         self._state.exciter_active = True
@@ -409,9 +451,9 @@ class _PostProcessor:
 
     def post_limit(self, l32: np.ndarray, r32: np.ndarray, blend: float) -> tuple:
         self._state.comfort_noise_active = False
-        if not self._enabled or self.bypass or not self._cn_enabled:
+        if not self._enabled or self.bypass or not self._mod_enabled['comfort_noise']:
             return l32, r32
-        eff = self._eff(blend, self._cn_thr)
+        eff = self._eff(blend, self._thresholds['comfort_noise'])
         if eff < 1e-3:
             return l32, r32
         n      = len(l32)
@@ -719,10 +761,8 @@ class FmStereoDemodulator:
         self._rms_k_smooth = 0.12   # smoothed K-weighted RMS; init at target level
 
         # --- optional post-processing ---
-        self._pp = None
         self.pp_bypass: bool = False   # runtime A/B bypass (thread-safe bool under GIL)
-        if post_processing and post_processing.get("enabled", False):
-            self._pp = _PostProcessor(post_processing)
+        self._pp = _PostProcessor(post_processing or {})
 
     def process(self, iq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
