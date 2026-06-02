@@ -10,6 +10,7 @@
 </head>
 <body>
   <div id="app">
+  <div id="left-col">
 
     <!-- Now Playing hero (player controls live here) -->
     <header id="now-playing">
@@ -59,6 +60,18 @@
       </div><!-- #now-playing-content -->
     </header>
 
+    <!-- Presets (left column on desktop) -->
+    <section id="presets-section">
+      <div id="presets-header">
+        <h2>Presets</h2>
+        <button id="btn-save-preset" class="btn-small">+ Save current</button>
+      </div>
+      <div id="presets-list"></div>
+    </section>
+
+  </div><!-- #left-col -->
+  <div id="right-col">
+
     <!-- Tuner -->
     <section id="tuner-section">
       <div id="band-tabs" role="tablist" aria-label="Frequency band">
@@ -93,15 +106,6 @@
       </div>
     </section>
 
-    <!-- Presets -->
-    <section id="presets-section">
-      <div id="presets-header">
-        <h2>Presets</h2>
-        <button id="btn-save-preset" class="btn-small">+ Save current</button>
-      </div>
-      <div id="presets-list"></div>
-    </section>
-
     <!-- Recordings -->
     <section id="recordings-section">
       <h2>Recordings</h2>
@@ -117,6 +121,7 @@
       <div id="history-list"></div>
     </section>
 
+  </div><!-- #right-col -->
   </div><!-- #app -->
 
   <!-- Save preset modal -->

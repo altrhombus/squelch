@@ -235,21 +235,39 @@ class MetadataState:
             pass
 
     async def save_history(self):
-        key = f"{self.artist}|{self.title}|{self.station_name}"
-        if (key == self._last_history_key
-                or not self.station_name
-                or not self.artist
-                or not self.title):
+        if not self.station_name or not self.artist or not self.title:
             return
-        self._last_history_key = key
+        key = f"{self.artist}|{self.title}|{self.station_name}"
+        if key == self._last_history_key:
+            return
         from .db import get_db
         db = await get_db()
         try:
-            await db.execute(
-                """INSERT INTO history (station_name, artist, title, pty, frequency, band)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (self.station_name, self.artist, self.title, self.pty, self.frequency, self.band),
-            )
+            # If we already have an entry for this exact song in the last 5
+            # minutes, update its station_name rather than inserting a duplicate.
+            # RDS PS arrives in 2-character segments and can take 30–60 seconds
+            # to stabilise; this lets later (more complete) names enrich the row.
+            async with db.execute(
+                """SELECT id FROM history
+                   WHERE artist = ? AND title = ?
+                     AND seen_at > datetime('now', '-5 minutes')
+                   ORDER BY seen_at DESC LIMIT 1""",
+                (self.artist, self.title),
+            ) as cur:
+                recent = await cur.fetchone()
+
+            if recent:
+                await db.execute(
+                    "UPDATE history SET station_name = ? WHERE id = ?",
+                    (self.station_name, recent["id"]),
+                )
+            else:
+                await db.execute(
+                    """INSERT INTO history (station_name, artist, title, pty, frequency, band)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (self.station_name, self.artist, self.title, self.pty, self.frequency, self.band),
+                )
+            self._last_history_key = key
             await db.commit()
         except Exception as e:
             logger.warning("Failed to save history: %s", e)

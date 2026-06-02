@@ -35,8 +35,18 @@ html, body {
   padding: 12px var(--gap) env(safe-area-inset-bottom, 16px);
   display: flex;
   flex-direction: column;
+  /* gap is handled by the column wrappers; app itself has none */
+}
+
+/* Column wrappers — on mobile they're just transparent flex stacks */
+#left-col,
+#right-col {
+  display: flex;
+  flex-direction: column;
   gap: var(--gap);
 }
+/* Space between the two column groups on mobile */
+#right-col { margin-top: var(--gap); }
 
 /* =====================================================
    Now Playing — hero card
@@ -732,26 +742,30 @@ h2 {
     max-width: 960px;
     display: grid;
     grid-template-columns: 380px 1fr;
-    align-items: start;
     column-gap: var(--gap);
+    align-items: start;
+    padding-top: 16px;
   }
 
-  /* Left column: now-playing card, sticky */
-  #now-playing {
+  /* Left column: now-playing + presets, sticky as a unit */
+  #left-col {
     grid-column: 1;
-    grid-row: 1 / -1;
     position: sticky;
     top: 16px;
     align-self: start;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--surface2) transparent;
+    margin-top: 0;
   }
+  #left-col::-webkit-scrollbar { width: 4px; }
+  #left-col::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 2px; }
 
-  /* Right column: everything else */
-  #tuner-section,
-  #presets-section,
-  #recordings-section,
-  #history-section,
-  #diagnostics-drawer {
+  /* Right column: tuner, recordings, history */
+  #right-col {
     grid-column: 2;
+    margin-top: 0;
   }
 
   /* Slightly larger art on desktop */
@@ -760,7 +774,7 @@ h2 {
     height: 220px;
   }
 
-  /* Taller scrollable history on desktop — more room available */
+  /* Taller scrollable history on desktop */
   #history-list {
     max-height: 360px;
   }
