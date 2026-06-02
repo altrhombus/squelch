@@ -194,10 +194,9 @@ class MetadataState:
         try:
             await asyncio.sleep(4)
             await self.save_history()
-            # For bands without native art (FM, AM, scanner), look up artwork
-            # from iTunes using the now-stable artist and title.
+            # If no native art arrived (HD stations often don't transmit LOT),
+            # fall back to iTunes for any band that has a stable artist + title.
             if (not self.has_art
-                    and self.band in ("fm", "am", "scanner")
                     and self.artist
                     and self.title):
                 from .art_lookup import fetch_itunes_art

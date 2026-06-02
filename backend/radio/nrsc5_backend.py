@@ -57,6 +57,7 @@ class Nrsc5Backend:
         self._stdout_task:    Optional[asyncio.Task] = None
         self._stderr_task:    Optional[asyncio.Task] = None
         self._pcm_task:       Optional[asyncio.Task] = None
+        self._art_task:       Optional[asyncio.Task] = None
         self._art_dir         = tempfile.mkdtemp(prefix="squelch-art-")
         self._pcm_r_fd:       Optional[int] = None
         self._pcm_w_fd:       Optional[int] = None
@@ -91,12 +92,13 @@ class Nrsc5Backend:
         self._stdout_task = asyncio.create_task(self._parse_stdout())
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         self._pcm_task    = asyncio.create_task(self._read_pcm())
+        self._art_task    = asyncio.create_task(self._watch_art_dir())
 
     async def stop(self):
-        for task in (self._stdout_task, self._stderr_task, self._pcm_task):
+        for task in (self._stdout_task, self._stderr_task, self._pcm_task, self._art_task):
             if task:
                 task.cancel()
-        self._stdout_task = self._stderr_task = self._pcm_task = None
+        self._stdout_task = self._stderr_task = self._pcm_task = self._art_task = None
 
         if self._process:
             try:
@@ -171,12 +173,40 @@ class Nrsc5Backend:
         if m := _RE_PTY.search(line):     update["pty"]          = m.group(1).strip()
         if m := _RE_LOT.search(line):
             art = m.group(1).strip()
+            # nrsc5 may log only the filename; resolve to the full art dir path
+            if not os.path.isabs(art):
+                art = os.path.join(self._art_dir, art)
+            logger.info("nrsc5 LOT file: %s (exists=%s)", art, os.path.exists(art))
             if os.path.exists(art):
                 update["art_path"] = art
         if _RE_LOCKED.search(line): update["hd_locked"] = True
         if _RE_LOST.search(line):   update["hd_locked"] = False
         if update:
             self._metadata_cb(update)
+
+    async def _watch_art_dir(self):
+        """Poll the art directory for new image files every 3 seconds.
+
+        Belt-and-suspenders fallback for when the LOT line is missed or arrives
+        before the file is fully written. Each file is delivered only once.
+        """
+        seen: set[str] = set()
+        try:
+            while True:
+                await asyncio.sleep(3)
+                if not self._metadata_cb or not os.path.isdir(self._art_dir):
+                    continue
+                for fname in sorted(os.listdir(self._art_dir)):
+                    if fname in seen:
+                        continue
+                    if fname.lower().endswith((".jpg", ".jpeg", ".png")):
+                        fpath = os.path.join(self._art_dir, fname)
+                        if os.path.getsize(fpath) > 0:
+                            seen.add(fname)
+                            logger.info("nrsc5 art dir: new file %s", fname)
+                            self._metadata_cb({"art_path": fpath})
+        except asyncio.CancelledError:
+            pass
 
     async def _drain_stderr(self):
         """Read stderr and parse it for metadata — nrsc5 sends informational
