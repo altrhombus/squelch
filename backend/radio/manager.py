@@ -15,6 +15,7 @@ import logging
 import os
 from typing import Optional
 
+import numpy as np
 from scipy.signal import resample_poly
 
 from ..metadata import MetadataState
