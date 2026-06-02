@@ -9,117 +9,215 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <div id="app">
-  <div id="left-col">
 
-    <!-- Now Playing hero (player controls live here) -->
-    <header id="now-playing">
-      <div id="art-blur-bg"></div>
-      <!-- Signal meter — top-left, absolute -->
-      <div id="signal-meter" role="img" aria-label="Signal: no signal">
-        <span class="bar" data-n="1"></span>
-        <span class="bar" data-n="2"></span>
-        <span class="bar" data-n="3"></span>
-        <span class="bar" data-n="4"></span>
-        <span class="bar" data-n="5"></span>
+  <!-- Desktop toolbar — hidden on phone/tablet -->
+  <div id="toolbar" aria-hidden="true">
+    <span id="wordmark">Squelch</span>
+    <div id="toolbar-actions">
+      <button id="btn-diag-toggle" class="btn-toolbar" aria-label="Toggle diagnostics" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" aria-hidden="true"><path d="M22 9V7h-2V5c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-2h2v-2h-2v-2h2v-2h-2V9h2zm-4 10H4V5h14v14zM6 13h5v4H6zm6-6h3v3h-3zm0 4h3v3h-3zM6 7h5v5H6z"/></svg>
+        Diagnostics
+      </button>
+    </div>
+  </div>
+
+  <div id="app-shell">
+
+    <!-- Sticky mini-player — shown on tablet/desktop when #now-playing scrolls out of view -->
+    <div id="mini-player" class="hidden" role="complementary" aria-label="Mini player">
+      <img id="mini-art" src="/static/placeholder.svg" alt="" aria-hidden="true" />
+      <div id="mini-info">
+        <span id="mini-station"></span>
+        <span id="mini-track"></span>
       </div>
-      <!-- WS reconnect badge — top-right, absolute -->
-      <div id="ws-status" class="hidden" title="Reconnecting…"></div>
-      <div id="now-playing-content">
+      <button id="mini-btn-play" class="btn-icon" aria-label="Play" aria-pressed="false">
+        <svg id="mini-icon-play" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="mini-icon-pause" viewBox="0 0 24 24" fill="currentColor" class="hidden" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+      </button>
+      <div id="mini-signal-bars" aria-hidden="true">
+        <span class="mini-bar" data-n="1"></span>
+        <span class="mini-bar" data-n="2"></span>
+        <span class="mini-bar" data-n="3"></span>
+        <span class="mini-bar" data-n="4"></span>
+        <span class="mini-bar" data-n="5"></span>
+      </div>
+    </div>
 
-        <div id="art-wrap">
-          <img id="art-back" src="/static/placeholder.svg" alt="" aria-hidden="true" />
-          <img id="art" src="/static/placeholder.svg" alt="Cover art" />
-          <div id="hd-badge" class="badge hidden">HD</div>
-        </div>
+    <div id="app" data-panel="now-playing">
 
-        <div id="now-info">
-          <div id="meta-badges">
-            <div id="pty-badge" class="badge hidden"></div>
+      <!-- Left column: Now Playing hero (phone: now-playing panel) -->
+      <div id="left-col">
+        <header id="now-playing">
+          <div id="art-blur-bg"></div>
+          <div id="signal-meter" role="img" aria-label="Signal: no signal">
+            <span class="bar" data-n="1"></span>
+            <span class="bar" data-n="2"></span>
+            <span class="bar" data-n="3"></span>
+            <span class="bar" data-n="4"></span>
+            <span class="bar" data-n="5"></span>
           </div>
-          <p id="station-name" aria-live="polite">Squelch</p>
-          <p id="station-slogan" class="muted hidden"></p>
-          <p id="track-info" class="muted" aria-live="polite">Ready to tune</p>
-        </div>
+          <div id="ws-status" class="hidden" title="Reconnecting…"></div>
+          <div id="now-playing-content">
 
-        <audio id="player" preload="none" playsinline></audio>
-        <div id="player-controls">
-          <button id="btn-play" class="btn-icon" aria-label="Play" aria-pressed="false">
-            <svg id="icon-play" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-            <svg id="icon-pause" viewBox="0 0 24 24" fill="currentColor" class="hidden" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-          </button>
-          <div id="volume-wrap">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="18" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
-            <input id="volume" type="range" min="0" max="1" step="0.02" value="1" aria-label="Volume" />
+            <div id="art-wrap">
+              <img id="art-back" src="/static/placeholder.svg" alt="" aria-hidden="true" />
+              <img id="art" src="/static/placeholder.svg" alt="Cover art" />
+            </div>
+
+            <div id="now-info">
+              <div id="meta-badges">
+                <div id="hd-badge" class="badge hidden">HD</div>
+                <div id="pty-badge" class="badge hidden"></div>
+              </div>
+              <p id="station-name" aria-live="polite">Squelch</p>
+              <p id="station-slogan" class="muted hidden"></p>
+              <div id="track-info" aria-live="polite">
+                <p id="track-artist" class="hidden"></p>
+                <p id="track-title" class="muted">Ready to tune</p>
+              </div>
+            </div>
+
+            <audio id="player" preload="none" playsinline></audio>
+            <div id="player-controls">
+              <button id="btn-play" class="btn-icon" aria-label="Play" aria-pressed="false">
+                <svg id="icon-play" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                <svg id="icon-pause" viewBox="0 0 24 24" fill="currentColor" class="hidden" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+              </button>
+              <div id="volume-wrap">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="18" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+                <input id="volume" type="range" min="0" max="1" step="0.02" value="1" aria-label="Volume" />
+              </div>
+              <button id="btn-record" class="btn-icon" aria-label="Start recording" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg>
+              </button>
+            </div>
+
+          </div><!-- #now-playing-content -->
+        </header>
+      </div><!-- #left-col -->
+
+      <!-- Center column: Tuner (phone: tune panel; tablet: stacked in right; desktop: center column) -->
+      <div id="center-col">
+        <section id="tuner-section">
+          <div id="band-tabs" role="tablist" aria-label="Frequency band">
+            <button class="band-tab active" data-band="fm" role="tab" aria-selected="true">FM</button>
+            <button class="band-tab" data-band="hd" role="tab" aria-selected="false">HD</button>
+            <button class="band-tab" data-band="am" role="tab" aria-selected="false">AM</button>
+            <button class="band-tab" data-band="scanner" role="tab" aria-selected="false">SCAN</button>
           </div>
-          <button id="btn-record" class="btn-icon" aria-label="Start recording" aria-pressed="false">
-            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg>
-          </button>
-        </div>
 
-      </div><!-- #now-playing-content -->
-    </header>
+          <div id="freq-row">
+            <button id="btn-step-down" class="btn-icon btn-step" aria-label="Step frequency down">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+            </button>
+            <div id="freq-display" aria-live="assertive" aria-atomic="true">
+              <span id="freq-value">—</span>
+              <span id="freq-unit">MHz</span>
+            </div>
+            <button id="btn-step-up" class="btn-icon btn-step" aria-label="Step frequency up">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+            </button>
+          </div>
 
-    <!-- History (left column, below hero) -->
-    <section id="history-section">
-      <h2>History</h2>
-      <div id="history-list"></div>
-    </section>
+          <!-- Frequency strip canvas — interactive drag-to-tune, desktop/tablet only -->
+          <canvas id="freq-strip" aria-hidden="true"></canvas>
 
-  </div><!-- #left-col -->
-  <div id="right-col">
+          <div id="dial-wrap">
+            <input id="dial" type="range" min="87.5" max="108.0" step="0.1" value="87.5" aria-label="Frequency dial" />
+            <div id="dial-ticks" aria-hidden="true"></div>
+          </div>
 
-    <!-- Tuner -->
-    <section id="tuner-section">
-      <div id="band-tabs" role="tablist" aria-label="Frequency band">
-        <button class="band-tab active" data-band="fm" role="tab" aria-selected="true">FM</button>
-        <button class="band-tab" data-band="hd" role="tab" aria-selected="false">HD</button>
-        <button class="band-tab" data-band="am" role="tab" aria-selected="false">AM</button>
-        <button class="band-tab" data-band="scanner" role="tab" aria-selected="false">SCAN</button>
-      </div>
+          <div id="freq-input-wrap">
+            <label for="freq-input" class="sr-only">Enter frequency</label>
+            <input id="freq-input" type="number" step="0.1" placeholder="Frequency" />
+            <button id="btn-go">Go</button>
+          </div>
+        </section>
+      </div><!-- #center-col -->
 
-      <div id="freq-row">
-        <button id="btn-step-down" class="btn-icon btn-step" aria-label="Step frequency down">
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
-        </button>
-        <div id="freq-display" aria-live="assertive" aria-atomic="true">
-          <span id="freq-value">—</span>
-          <span id="freq-unit">MHz</span>
-        </div>
-        <button id="btn-step-up" class="btn-icon btn-step" aria-label="Step frequency up">
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
-        </button>
-      </div>
+      <!-- Right column: Library (phone: library panel; tablet: stacked below tuner; desktop: right column) -->
+      <div id="right-col">
 
-      <div id="dial-wrap">
-        <input id="dial" type="range" min="87.5" max="108.0" step="0.1" value="87.5" aria-label="Frequency dial" />
-        <div id="dial-ticks" aria-hidden="true"></div>
-      </div>
+        <section id="presets-section">
+          <div id="presets-header">
+            <h2>Presets</h2>
+            <button id="btn-save-preset" class="btn-small">+ Save current</button>
+          </div>
+          <div id="presets-list"></div>
+        </section>
 
-      <div id="freq-input-wrap">
-        <label for="freq-input" class="sr-only">Enter frequency</label>
-        <input id="freq-input" type="number" step="0.1" placeholder="Frequency" />
-        <button id="btn-go">Go</button>
-      </div>
-    </section>
+        <section id="recordings-section">
+          <h2>Recordings</h2>
+          <div id="recordings-list"></div>
+        </section>
 
-    <!-- Presets (right column, near tuner) -->
-    <section id="presets-section">
-      <div id="presets-header">
-        <h2>Presets</h2>
-        <button id="btn-save-preset" class="btn-small">+ Save current</button>
-      </div>
-      <div id="presets-list"></div>
-    </section>
+        <section id="history-section">
+          <h2>History</h2>
+          <div id="history-list"></div>
+        </section>
 
-    <!-- Recordings -->
-    <section id="recordings-section">
-      <h2>Recordings</h2>
-      <div id="recordings-list"></div>
-    </section>
+        <details id="diagnostics-drawer">
+          <summary>Diagnostics</summary>
+          <div class="diag-body">
+            <div class="diag-row" id="diag-iq-row">
+              <span class="diag-label">IQ RMS <span class="diag-hint">(saturation)</span></span>
+              <div class="diag-track"><div class="diag-fill" id="diag-iq-bar"></div></div>
+              <span class="diag-num" id="diag-iq-val">—</span>
+            </div>
+            <div class="diag-row" id="diag-comp-row">
+              <span class="diag-label">Composite <span class="diag-hint">(FM)</span></span>
+              <div class="diag-track"><div class="diag-fill" id="diag-comp-bar"></div></div>
+              <span class="diag-num" id="diag-comp-val">—</span>
+            </div>
+            <div class="diag-row" id="diag-pilot-row">
+              <span class="diag-label">Pilot <span class="diag-hint">(19 kHz)</span></span>
+              <div class="diag-track"><div class="diag-fill" id="diag-pilot-bar"></div></div>
+              <span class="diag-num" id="diag-pilot-val">—</span>
+            </div>
+            <div class="diag-row" id="diag-noise-row">
+              <span class="diag-label">Noise floor</span>
+              <div class="diag-track"><div class="diag-fill" id="diag-noise-bar"></div></div>
+              <span class="diag-num" id="diag-noise-val">—</span>
+            </div>
+            <div class="diag-row" id="diag-blend-row">
+              <span class="diag-label">Stereo blend</span>
+              <div class="diag-track"><div class="diag-fill" id="diag-blend-bar"></div></div>
+              <span class="diag-num" id="diag-blend-val">—</span>
+            </div>
+            <div class="diag-row">
+              <span class="diag-label">Audio RMS</span>
+              <div class="diag-track"><div class="diag-fill" id="diag-audio-bar"></div></div>
+              <span class="diag-num" id="diag-audio-val">—</span>
+            </div>
+            <div class="diag-row" id="diag-gain-row">
+              <span class="diag-label">SDR Gain</span>
+              <div class="diag-track"><div class="diag-fill" id="diag-gain-bar"></div></div>
+              <span class="diag-num" id="diag-gain-val">—</span>
+            </div>
+            <button id="btn-copy-diag" class="btn-small" style="margin-top:8px">Copy as JSON</button>
+          </div>
+        </details>
 
-  </div><!-- #right-col -->
-  </div><!-- #app -->
+      </div><!-- #right-col -->
+
+    </div><!-- #app -->
+  </div><!-- #app-shell -->
+
+  <!-- Bottom nav — phone only (hidden on tablet/desktop via CSS) -->
+  <nav id="bottom-nav" role="tablist" aria-label="App sections">
+    <button class="nav-tab active" data-panel="now-playing" role="tab" aria-selected="true">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+      <span>Now Playing</span>
+    </button>
+    <button class="nav-tab" data-panel="tune" role="tab" aria-selected="false">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V6h16v12zM6 10h2v4H6zm3 0h2v4H9zm3 0h6v4h-6z"/></svg>
+      <span>Tune</span>
+    </button>
+    <button class="nav-tab" data-panel="library" role="tab" aria-selected="false">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
+      <span>Library</span>
+    </button>
+  </nav>
 
   <!-- Save preset modal -->
   <div id="modal-preset" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-preset-title">
@@ -136,6 +234,9 @@
 
   <!-- Signal strength tooltip -->
   <div id="signal-tooltip" role="tooltip" aria-hidden="true"></div>
+
+  <!-- Canvas for dominant color extraction from album art -->
+  <canvas id="color-canvas" width="8" height="8" aria-hidden="true" style="display:none"></canvas>
 
   <!-- No hls.js needed — audio is served as a direct AAC/ADTS HTTP stream -->
   <script src="/static/app.js"></script>

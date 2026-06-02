@@ -7,23 +7,29 @@ const BAND_RANGES = {
   scanner: { min: 25,     max: 1300,  step: 0.025,  unit: "MHz" },
 };
 
+const PANELS     = ['now-playing', 'tune', 'library'];
+const PANEL_COL  = { 'now-playing': 'left-col', 'tune': 'center-col', 'library': 'right-col' };
+
 let currentBand = "fm";
 let currentFreq = 91.1;
-let isPlaying = false;
+let isPlaying   = false;
 let isRecording = false;
 let ws = null;
 let wsReconnectTimer = null;
 
 // Art / metadata state
-let _prevHasArt = false;
-let _prevArtUrl = "";
+let _prevHasArt     = false;
+let _prevArtUrl     = "";
 let _prevArtVersion = -1;
-let _prevHdLocked = false;
+let _prevHdLocked   = false;
 let _currentAppleMusicUrl = null;
 
 // History auto-refresh
-let _prevTrackKey = "";
+let _prevTrackKey       = "";
 let _historyRefreshTimer = null;
+
+// Last known meta for Media Session sync
+let _lastMeta = null;
 
 // ---------------------------------------------------------------------------
 // Elements
@@ -47,7 +53,9 @@ const historyList    = document.getElementById("history-list");
 
 const elStationName   = document.getElementById("station-name");
 const elStationSlogan = document.getElementById("station-slogan");
-const elTrackInfo     = document.getElementById("track-info");
+const elTrackInfo     = document.getElementById("track-info");     // container (aria-live)
+const elTrackArtist   = document.getElementById("track-artist");
+const elTrackTitle    = document.getElementById("track-title");
 const elArt           = document.getElementById("art");
 const artBack         = document.getElementById("art-back");
 const artBlurBg       = document.getElementById("art-blur-bg");
@@ -81,12 +89,13 @@ function setBand(band) {
   dial.step = r.step;
   freqUnit.textContent = r.unit;
   freqInput.step = r.step;
-  freqInput.min = r.min;
-  freqInput.max = r.max;
+  freqInput.min  = r.min;
+  freqInput.max  = r.max;
   freqInput.placeholder = `${r.min}–${r.max} ${r.unit}`;
 
   buildDialTicks(r);
   setFreq(clamp(currentFreq, r.min, r.max));
+  drawFreqStrip();
 }
 
 function buildDialTicks(r) {
@@ -101,10 +110,11 @@ function buildDialTicks(r) {
 }
 
 function setFreq(f) {
-  currentFreq = f;
-  dial.value = f;
+  currentFreq    = f;
+  dial.value     = f;
   freqValue.textContent = formatFreq(f, currentBand);
   freqInput.value = f;
+  drawFreqStrip();
 }
 
 function formatFreq(f, band) {
@@ -132,8 +142,8 @@ async function tune(freq, band) {
 
   const res = await api("POST", "/tune", {
     frequency: freq,
-    band: band,
-    gain: "auto",
+    band:      band,
+    gain:      "auto",
     stereo_mode: "auto",
   });
 
@@ -143,15 +153,21 @@ async function tune(freq, band) {
 }
 
 function _startStream() {
-  player.src = "/stream";
+  player.src   = "/stream";
   player.muted = true;
   player.play()
-    .then(() => { player.muted = false; setPlayState(true); })
+    .then(() => {
+      player.muted = false;
+      setPlayState(true);
+      setupMediaSession();
+    })
     .catch(err => {
       player.muted = false;
       if (err?.name === "NotAllowedError") {
-        elTrackInfo.textContent = "Tap ▶ to start";
-        elTrackInfo.classList.add("muted");
+        elTrackTitle.textContent = "Tap ▶ to start";
+        elTrackTitle.classList.add("muted");
+        elTrackArtist.textContent = "";
+        elTrackArtist.classList.add("hidden");
       }
     });
 }
@@ -162,10 +178,20 @@ function setBandIfChanged(band) {
 
 function setPlayState(playing) {
   isPlaying = playing;
-  iconPlay.classList.toggle("hidden", playing);
+  iconPlay.classList.toggle("hidden",  playing);
   iconPause.classList.toggle("hidden", !playing);
   btnPlay.setAttribute("aria-pressed", playing);
-  btnPlay.setAttribute("aria-label", playing ? "Pause" : "Play");
+  btnPlay.setAttribute("aria-label",   playing ? "Pause" : "Play");
+
+  // Mini-player play button sync
+  const miniIconPlay  = document.getElementById("mini-icon-play");
+  const miniIconPause = document.getElementById("mini-icon-pause");
+  const miniBtn       = document.getElementById("mini-btn-play");
+  if (miniBtn)       { miniBtn.setAttribute("aria-pressed", playing); miniBtn.setAttribute("aria-label", playing ? "Pause" : "Play"); }
+  if (miniIconPlay)  miniIconPlay.classList.toggle("hidden",  playing);
+  if (miniIconPause) miniIconPause.classList.toggle("hidden", !playing);
+
+  updateMediaSession(null); // update playback state only
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +199,7 @@ function setPlayState(playing) {
 // ---------------------------------------------------------------------------
 
 function setupStepButton(btn, direction) {
-  let holdTimer = null;
+  let holdTimer    = null;
   let holdInterval = null;
 
   function stepOne() {
@@ -184,7 +210,7 @@ function setupStepButton(btn, direction) {
 
   btn.addEventListener("pointerdown", (e) => {
     e.preventDefault();
-    stepOne(); // immediate first step on every tap
+    stepOne();
     holdTimer = setTimeout(() => {
       holdInterval = setInterval(stepOne, 130);
     }, 450);
@@ -193,14 +219,14 @@ function setupStepButton(btn, direction) {
   const commit = () => {
     clearTimeout(holdTimer);
     clearInterval(holdInterval);
-    holdTimer = null;
+    holdTimer    = null;
     holdInterval = null;
     tune(currentFreq);
   };
 
-  btn.addEventListener("pointerup", commit);
+  btn.addEventListener("pointerup",     commit);
   btn.addEventListener("pointercancel", () => { clearTimeout(holdTimer); clearInterval(holdInterval); });
-  btn.addEventListener("pointerleave", () => { clearTimeout(holdTimer); clearInterval(holdInterval); });
+  btn.addEventListener("pointerleave",  () => { clearTimeout(holdTimer); clearInterval(holdInterval); });
 
   btn.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); stepOne(); tune(currentFreq); }
@@ -233,7 +259,7 @@ function connectWs() {
 }
 
 // ---------------------------------------------------------------------------
-// Art crossfade
+// Art crossfade + dominant color extraction
 // ---------------------------------------------------------------------------
 
 function updateArt(rawUrl) {
@@ -248,13 +274,62 @@ function updateArt(rawUrl) {
   img.onload = () => {
     elArt.src = img.src;
     elArt.style.opacity = "1";
+
+    // Update mini-player art
+    const miniArt = document.getElementById("mini-art");
+    if (miniArt) miniArt.src = img.src;
+
+    // Extract dominant color and tint the UI
+    if (hasNewArt) {
+      const color = extractDominantColor(img);
+      if (color) {
+        const root = document.documentElement;
+        root.style.setProperty("--accent-dynamic", color);
+        root.style.setProperty("--accent-glow",
+          color.replace("rgb", "rgba").replace(")", ", 0.25)"));
+      }
+    } else {
+      const root = document.documentElement;
+      root.style.setProperty("--accent-dynamic", "var(--accent)");
+      root.style.setProperty("--accent-glow", "rgba(224, 92, 0, 0.25)");
+    }
   };
   img.onerror = () => {
     elArt.src = "/static/placeholder.svg";
     elArt.style.opacity = "1";
     artBlurBg.style.backgroundImage = "none";
+    const root = document.documentElement;
+    root.style.setProperty("--accent-dynamic", "var(--accent)");
+    root.style.setProperty("--accent-glow", "rgba(224, 92, 0, 0.25)");
   };
   img.src = src;
+}
+
+function extractDominantColor(imgEl) {
+  try {
+    const canvas = document.getElementById("color-canvas");
+    if (!canvas) return null;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(imgEl, 0, 0, 8, 8);
+    const data = ctx.getImageData(0, 0, 8, 8).data;
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const lum = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+      if (lum > 20 && lum < 220) { r += data[i]; g += data[i + 1]; b += data[i + 2]; n++; }
+    }
+    if (!n) return null;
+    r = Math.round(r / n);
+    g = Math.round(g / n);
+    b = Math.round(b / n);
+    // Boost saturation toward the dominant channel
+    const mx = Math.max(r, g, b), k = 1.5;
+    r = Math.min(255, Math.round(r * (r === mx ? k : 1 / k)));
+    g = Math.min(255, Math.round(g * (g === mx ? k : 1 / k)));
+    b = Math.min(255, Math.round(b * (b === mx ? k : 1 / k)));
+    return `rgb(${r},${g},${b})`;
+  } catch {
+    return null; // CORS or canvas security error — silently skip
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +337,8 @@ function updateArt(rawUrl) {
 // ---------------------------------------------------------------------------
 
 function applyMeta(m) {
+  _lastMeta = m;
+
   // Station name
   if (m.station_name) {
     elStationName.textContent = m.station_name;
@@ -286,13 +363,18 @@ function applyMeta(m) {
     elStationSlogan.classList.add("hidden");
   }
 
-  // Track info line
+  // Track info — split into artist + title lines
+  const trackKey = `${m.artist || ""}|${m.title || ""}`;
   if (m.artist && m.title) {
-    elTrackInfo.textContent = `${m.artist} — ${m.title}`;
-    elTrackInfo.classList.remove("muted");
+    elTrackArtist.textContent = m.artist;
+    elTrackArtist.classList.remove("hidden");
+    elTrackTitle.textContent = m.title;
+    elTrackTitle.classList.remove("muted");
   } else if (m.title) {
-    elTrackInfo.textContent = m.title;
-    elTrackInfo.classList.remove("muted");
+    elTrackArtist.textContent = "";
+    elTrackArtist.classList.add("hidden");
+    elTrackTitle.textContent = m.title;
+    elTrackTitle.classList.remove("muted");
   } else {
     const hint = {
       idle:      "Ready to tune",
@@ -300,24 +382,33 @@ function applyMeta(m) {
       buffering: "Buffering…",
       live:      m.band === "fm" ? "Waiting for RDS…" : "Live",
     }[m.state] || "";
-    elTrackInfo.textContent = hint;
-    elTrackInfo.classList.add("muted");
+    elTrackArtist.textContent = "";
+    elTrackArtist.classList.add("hidden");
+    elTrackTitle.textContent = hint;
+    elTrackTitle.classList.add("muted");
   }
 
-  // History auto-refresh when track changes
-  const trackKey = `${m.artist || ""}|${m.title || ""}`;
+  // Track change animation
   if (trackKey !== _prevTrackKey && (m.artist || m.title)) {
     _prevTrackKey = trackKey;
+    const nowInfo = document.getElementById("now-info");
+    if (nowInfo) {
+      nowInfo.classList.remove("track-changing");
+      // Trigger reflow to restart animation
+      void nowInfo.offsetWidth;
+      nowInfo.classList.add("track-changing");
+      nowInfo.addEventListener("animationend", () => nowInfo.classList.remove("track-changing"), { once: true });
+    }
     clearTimeout(_historyRefreshTimer);
     _historyRefreshTimer = setTimeout(loadHistory, 6000);
   }
 
   // Cover art — crossfade when art appears, disappears, URL changes, or version bumps
-  const nowHasArt = !!(m.has_art && m.art_url);
-  const artVersion = m.art_version ?? -1;
+  const nowHasArt   = !!(m.has_art && m.art_url);
+  const artVersion  = m.art_version ?? -1;
   if (nowHasArt !== _prevHasArt || (nowHasArt && m.art_url !== _prevArtUrl) || (nowHasArt && artVersion !== _prevArtVersion)) {
-    _prevHasArt = nowHasArt;
-    _prevArtUrl = m.art_url || "";
+    _prevHasArt    = nowHasArt;
+    _prevArtUrl    = m.art_url || "";
     _prevArtVersion = artVersion;
     updateArt(nowHasArt ? m.art_url : "/static/placeholder.svg");
   }
@@ -326,7 +417,7 @@ function applyMeta(m) {
   _currentAppleMusicUrl = m.apple_music_url || null;
   updateArtLink(m);
 
-  // HD badge with lock-in pulse animation
+  // HD badge with lock-in animation
   if (m.hd_locked && !_prevHdLocked) {
     elHdBadge.classList.add("hd-pulse");
     elHdBadge.addEventListener("animationend", () => elHdBadge.classList.remove("hd-pulse"), { once: true });
@@ -342,24 +433,33 @@ function applyMeta(m) {
     elPtyBadge.classList.add("hidden");
   }
 
-  // Signal bars
+  // Signal bars + strong class
   const b = m.signal_bars || 0;
   const signalLabels = ["No signal", "Poor", "Weak", "Fair", "Good", "Excellent"];
-  const signalLabel = signalLabels[b] || "No signal";
-  const signalMeter = document.getElementById("signal-meter");
+  const signalMeter  = document.getElementById("signal-meter");
   if (signalMeter) {
-    signalMeter.setAttribute("aria-label", `Signal: ${signalLabel}`);
-    signalMeter.dataset.signalLabel = signalLabel;
+    signalMeter.setAttribute("aria-label", `Signal: ${signalLabels[b] || "No signal"}`);
+    signalMeter.dataset.signalLabel = signalLabels[b] || "No signal";
+    signalMeter.classList.toggle("strong", b >= 4);
   }
   bars.forEach(bar => bar.classList.toggle("active", Number(bar.dataset.n) <= b));
 
-  // Diagnostics panel (elements may not exist in HTML — null-safe)
+  // Mini-player signal bars
+  document.querySelectorAll(".mini-bar").forEach(bar =>
+    bar.classList.toggle("active", Number(bar.dataset.n) <= b)
+  );
+
+  // Diagnostics panel (elements may not exist — null-safe)
   if (m.diag) applyDiag(m.diag, m.band);
+
+  // Media Session metadata
+  updateMediaSession(m);
+
+  // Mini-player info sync
+  syncMiniPlayer();
 }
 
 function updateArtLink(m) {
-  // Prefer the direct Apple Music URL from the iTunes lookup.
-  // Fall back to an Apple Music search URL when artist+title are available.
   let url = _currentAppleMusicUrl;
   if (!url && m.artist && m.title) {
     url = `https://music.apple.com/search?term=${encodeURIComponent(m.artist + " " + m.title)}`;
@@ -436,19 +536,19 @@ function setDiagMeter(id, value, maxVal, colorFn, labelFn) {
   if (!bar || !val) return;
   const pct = Math.min(100, (value / maxVal) * 100);
   bar.style.width = pct + "%";
-  bar.className = "diag-fill " + colorFn(value);
+  bar.className   = "diag-fill " + colorFn(value);
   val.textContent = value > 0 ? labelFn(value) : "—";
 }
 
 document.getElementById("btn-copy-diag")?.addEventListener("click", () => {
   const info = {
-    timestamp: new Date().toISOString(),
-    frequency: currentFreq,
-    band: currentBand,
+    timestamp:  new Date().toISOString(),
+    frequency:  currentFreq,
+    band:       currentBand,
     ...(_lastDiag || {}),
   };
   const text = JSON.stringify(info, null, 2);
-  const btn = document.getElementById("btn-copy-diag");
+  const btn  = document.getElementById("btn-copy-diag");
   const orig = btn.textContent;
   const finish = () => {
     btn.textContent = "Copied!";
@@ -470,6 +570,320 @@ function fallbackCopy(text, done) {
   ta.select();
   try { document.execCommand("copy"); done(); } catch (_) {}
   document.body.removeChild(ta);
+}
+
+// ---------------------------------------------------------------------------
+// iOS / desktop Media Session API
+// ---------------------------------------------------------------------------
+
+let _mediaSessionReady = false;
+
+function setupMediaSession() {
+  if (!("mediaSession" in navigator) || _mediaSessionReady) return;
+  _mediaSessionReady = true;
+
+  navigator.mediaSession.setActionHandler("play", () => _startStream());
+  navigator.mediaSession.setActionHandler("pause", () => {
+    player.pause();
+    setPlayState(false);
+  });
+  navigator.mediaSession.setActionHandler("stop", () => {
+    player.pause();
+    setPlayState(false);
+  });
+  navigator.mediaSession.setActionHandler("previoustrack", () => {
+    const r = BAND_RANGES[currentBand];
+    tune(clamp(parseFloat((currentFreq - r.step).toFixed(4)), r.min, r.max));
+  });
+  navigator.mediaSession.setActionHandler("nexttrack", () => {
+    const r = BAND_RANGES[currentBand];
+    tune(clamp(parseFloat((currentFreq + r.step).toFixed(4)), r.min, r.max));
+  });
+
+  // Apply current meta immediately if we have it
+  if (_lastMeta) updateMediaSession(_lastMeta);
+}
+
+function updateMediaSession(m) {
+  if (!("mediaSession" in navigator)) return;
+
+  if (m !== null) {
+    // artwork src must be absolute for iOS Safari lock screen
+    const artSrc = (m?.has_art && m?.art_url)
+      ? location.origin + m.art_url + "?t=" + (m.art_version || 0)
+      : location.origin + "/static/placeholder.svg";
+
+    const titleText  = m?.title        || freqValue.textContent + " " + freqUnit.textContent;
+    const artistText = m?.artist       || m?.station_name || "";
+    const albumText  = m?.station_name || m?.slogan       || "Squelch";
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title:   titleText,
+      artist:  artistText,
+      album:   albumText,
+      artwork: [
+        { src: artSrc, sizes: "512x512", type: "image/jpeg" },
+        { src: artSrc, sizes: "256x256", type: "image/jpeg" },
+      ],
+    });
+  }
+
+  navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+}
+
+// ---------------------------------------------------------------------------
+// Mini-player (tablet/desktop sticky bar)
+// ---------------------------------------------------------------------------
+
+function setupMiniPlayer() {
+  const nowPlaying = document.getElementById("now-playing");
+  const miniPlayer = document.getElementById("mini-player");
+  if (!nowPlaying || !miniPlayer) return;
+
+  const obs = new IntersectionObserver(entries => {
+    const visible = entries[0].isIntersecting;
+    miniPlayer.classList.toggle("hidden", visible);
+    if (!visible) syncMiniPlayer();
+  }, { threshold: 0.15 });
+
+  obs.observe(nowPlaying);
+
+  // Mini play button
+  document.getElementById("mini-btn-play")?.addEventListener("click", () => {
+    if (isPlaying) {
+      player.pause();
+      setPlayState(false);
+    } else {
+      _startStream();
+    }
+  });
+}
+
+function syncMiniPlayer() {
+  const miniPlayer = document.getElementById("mini-player");
+  if (!miniPlayer || miniPlayer.classList.contains("hidden")) return;
+
+  const miniArt     = document.getElementById("mini-art");
+  const miniStation = document.getElementById("mini-station");
+  const miniTrack   = document.getElementById("mini-track");
+
+  if (miniArt)     miniArt.src = elArt.src;
+  if (miniStation) miniStation.textContent = elStationName.textContent;
+  if (miniTrack)   miniTrack.textContent   = elTrackTitle?.textContent || "";
+}
+
+// ---------------------------------------------------------------------------
+// Bottom nav tab system (phone)
+// ---------------------------------------------------------------------------
+
+function activateTab(name) {
+  const app = document.getElementById("app");
+  const currentPanel = app.dataset.panel || "now-playing";
+  if (name === currentPanel) return;
+
+  const prevIdx = PANELS.indexOf(currentPanel);
+  const nextIdx = PANELS.indexOf(name);
+  if (nextIdx === -1) return;
+  const dir = nextIdx > prevIdx ? 1 : -1;
+  const dur = 240;
+
+  // Update nav tab states
+  document.querySelectorAll(".nav-tab").forEach(t => {
+    const active = t.dataset.panel === name;
+    t.classList.toggle("active", active);
+    t.setAttribute("aria-selected", String(active));
+  });
+
+  const outColId = PANEL_COL[currentPanel];
+  const inColId  = PANEL_COL[name];
+  const outCol   = document.getElementById(outColId);
+  const inCol    = document.getElementById(inColId);
+  if (!inCol) return;
+
+  // Animate outgoing column
+  if (outCol) {
+    outCol.style.animation = `${dir > 0 ? "panel-exit-left" : "panel-exit-right"} ${dur}ms var(--ease-smooth) forwards`;
+  }
+
+  // Prepare incoming column — show but invisible
+  inCol.style.display  = "flex";
+  inCol.style.opacity  = "0";
+  inCol.style.animation = "";
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      inCol.style.animation = `${dir > 0 ? "panel-enter-right" : "panel-enter-left"} ${dur}ms var(--ease-smooth) forwards`;
+    });
+  });
+
+  // Hide outgoing after animation completes
+  setTimeout(() => {
+    if (outCol) {
+      outCol.style.animation = "";
+      outCol.style.display   = "none";
+      outCol.style.opacity   = "";
+    }
+    app.dataset.panel = name;
+    saveLayoutPref("lastTab", name);
+  }, dur);
+}
+
+function initPanels() {
+  if (window.innerWidth >= 640) return; // tablet/desktop: all columns always visible
+
+  // Ensure only left-col is visible initially
+  const leftCol   = document.getElementById("left-col");
+  const centerCol = document.getElementById("center-col");
+  const rightCol  = document.getElementById("right-col");
+  if (leftCol)   leftCol.style.display   = "flex";
+  if (centerCol) centerCol.style.display = "none";
+  if (rightCol)  rightCol.style.display  = "none";
+}
+
+// ---------------------------------------------------------------------------
+// Frequency strip canvas (tablet/desktop)
+// ---------------------------------------------------------------------------
+
+let _stripDragging = false;
+
+function drawFreqStrip() {
+  const canvas = document.getElementById("freq-strip");
+  if (!canvas || canvas.offsetWidth === 0) return;
+
+  const dpr  = window.devicePixelRatio || 1;
+  const W    = canvas.offsetWidth;
+  const H    = canvas.offsetHeight;
+
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+
+  const r     = BAND_RANGES[currentBand];
+  const range = r.max - r.min;
+
+  // Background
+  const cs = getComputedStyle(document.documentElement);
+  const surfaceColor = cs.getPropertyValue("--surface2").trim() || "#242424";
+  ctx.fillStyle = surfaceColor;
+  ctx.roundRect ? ctx.roundRect(0, 0, W, H, 6) : ctx.fillRect(0, 0, W, H);
+  ctx.fill();
+
+  // Tick marks
+  const majorStep = currentBand === "am" ? 100 : (currentBand === "scanner" ? 50 : 1);
+  const textY = H * 0.42;
+
+  ctx.fillStyle = "rgba(136, 136, 136, 0.65)";
+  ctx.font = `${Math.max(8, H * 0.22)}px -apple-system, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+  ctx.lineWidth = 1;
+
+  for (let f = Math.ceil(r.min / majorStep) * majorStep; f <= r.max; f += majorStep) {
+    const x = ((f - r.min) / range) * W;
+    ctx.beginPath();
+    ctx.moveTo(x, H * 0.55);
+    ctx.lineTo(x, H - 2);
+    ctx.stroke();
+    ctx.fillText(formatFreq(f, currentBand), x, textY);
+  }
+
+  // Position marker
+  const markerX   = ((currentFreq - r.min) / range) * W;
+  const accentColor = cs.getPropertyValue("--accent-dynamic").trim() || "#e05c00";
+
+  // Vertical line
+  ctx.strokeStyle = accentColor;
+  ctx.lineWidth   = 1.5;
+  ctx.globalAlpha = 0.7;
+  ctx.beginPath();
+  ctx.moveTo(markerX, 0);
+  ctx.lineTo(markerX, H);
+  ctx.stroke();
+
+  // Chevron marker at bottom
+  ctx.fillStyle   = accentColor;
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  ctx.moveTo(markerX - 5, H);
+  ctx.lineTo(markerX,     H * 0.5);
+  ctx.lineTo(markerX + 5, H);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function setupFreqStrip() {
+  const canvas = document.getElementById("freq-strip");
+  if (!canvas) return;
+
+  const getFreqFromX = (x) => {
+    const r = BAND_RANGES[currentBand];
+    const W = canvas.offsetWidth;
+    return clamp(
+      r.min + (x / W) * (r.max - r.min),
+      r.min, r.max
+    );
+  };
+
+  canvas.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    canvas.setPointerCapture(e.pointerId);
+    _stripDragging = true;
+    const f = getFreqFromX(e.offsetX);
+    setFreq(clamp(parseFloat(f.toFixed(currentBand === "am" ? 0 : (currentBand === "scanner" ? 3 : 1))), BAND_RANGES[currentBand].min, BAND_RANGES[currentBand].max));
+  });
+
+  canvas.addEventListener("pointermove", (e) => {
+    if (!_stripDragging) return;
+    const f = getFreqFromX(e.offsetX);
+    setFreq(clamp(parseFloat(f.toFixed(currentBand === "am" ? 0 : (currentBand === "scanner" ? 3 : 1))), BAND_RANGES[currentBand].min, BAND_RANGES[currentBand].max));
+  });
+
+  canvas.addEventListener("pointerup", () => {
+    if (!_stripDragging) return;
+    _stripDragging = false;
+    tune(currentFreq);
+  });
+
+  canvas.addEventListener("pointercancel", () => {
+    _stripDragging = false;
+  });
+
+  // Redraw on container resize
+  const ro = new ResizeObserver(() => drawFreqStrip());
+  ro.observe(canvas);
+}
+
+// ---------------------------------------------------------------------------
+// Layout persistence
+// ---------------------------------------------------------------------------
+
+function getLayoutPrefs() {
+  try {
+    return JSON.parse(localStorage.getItem("squelch.layout") || "{}");
+  } catch { return {}; }
+}
+
+function saveLayoutPref(key, value) {
+  const prefs = getLayoutPrefs();
+  prefs[key]  = value;
+  localStorage.setItem("squelch.layout", JSON.stringify(prefs));
+}
+
+function loadLayoutPrefs() {
+  const p = getLayoutPrefs();
+
+  // Restore last tab on phone
+  if (p.lastTab && window.innerWidth < 640) {
+    // Delayed slightly so initPanels() runs first
+    setTimeout(() => activateTab(p.lastTab), 0);
+  }
+
+  // Restore diagnostics drawer open state on tablet/desktop
+  if (p.diagOpen && window.innerWidth >= 640) {
+    const drawer = document.getElementById("diagnostics-drawer");
+    if (drawer) drawer.open = true;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -529,10 +943,10 @@ async function loadPresets() {
 async function saveCurrentPreset(name) {
   await api("POST", "/presets", {
     name,
-    frequency: currentFreq,
-    band: currentBand,
-    gain: "auto",
-    bandwidth: "wide",
+    frequency:   currentFreq,
+    band:        currentBand,
+    gain:        "auto",
+    bandwidth:   "wide",
     stereo_mode: "auto",
   });
   loadPresets();
@@ -552,7 +966,7 @@ async function loadRecordings() {
   recs.forEach(r => {
     const item = document.createElement("div");
     item.className = "recording-item";
-    const dur = r.duration_seconds ? formatDuration(r.duration_seconds) : "–";
+    const dur   = r.duration_seconds ? formatDuration(r.duration_seconds) : "–";
     const label = r.station_name
       ? `${r.station_name}${r.title ? " – " + r.title : ""}`
       : r.filename;
@@ -585,8 +999,11 @@ function playRecording(id, label) {
   player.play().then(() => setPlayState(true)).catch(() => {});
   elStationName.textContent = label || "Recording";
   document.title = (label || "Recording") + " — Squelch";
-  elTrackInfo.textContent = "Playing recording";
-  elTrackInfo.classList.remove("muted");
+  elTrackTitle.textContent  = "Playing recording";
+  elTrackTitle.classList.remove("muted");
+  elTrackArtist.textContent = "";
+  elTrackArtist.classList.add("hidden");
+  syncMiniPlayer();
 }
 
 function formatDuration(s) {
@@ -612,7 +1029,6 @@ async function loadHistory() {
     const musicUrl = (h.artist && h.title)
       ? `https://music.apple.com/search?term=${encodeURIComponent(h.artist + " " + h.title)}`
       : null;
-    // Only show freq badge separately when we also have a station name
     const freqBadge = h.station_name
       ? `<span class="history-freq">${freq}</span>`
       : "";
@@ -641,7 +1057,6 @@ async function loadHistory() {
 
     const item = row.querySelector(".history-item");
 
-    // Click to retune (suppress if swipe or music link)
     item.addEventListener("click", (e) => {
       if (e.target.closest(".btn-music") || e.target.closest(".btn-history-del")) return;
       if (item.dataset.swiped) { item.dataset.swiped = ""; return; }
@@ -651,7 +1066,6 @@ async function loadHistory() {
       tune(tuneFreq, h.band);
     });
 
-    // Desktop delete button
     row.querySelector(".btn-history-del").addEventListener("click", (e) => {
       e.stopPropagation();
       _deleteHistoryRow(h.id, row);
@@ -667,11 +1081,11 @@ function _addSwipeDelete(row, item, id) {
   const REVEAL = 72;
   let x0 = 0, y0 = 0;
   let determined = false, isHoriz = false;
-  let revealed = false;
+  let revealed   = false;
 
   const snap = (open) => {
     item.style.transition = "transform 0.2s ease";
-    item.style.transform = open ? `translateX(-${REVEAL}px)` : "translateX(0)";
+    item.style.transform  = open ? `translateX(-${REVEAL}px)` : "translateX(0)";
     bg.style.pointerEvents = open ? "auto" : "none";
     revealed = open;
   };
@@ -680,7 +1094,7 @@ function _addSwipeDelete(row, item, id) {
     x0 = e.touches[0].clientX;
     y0 = e.touches[0].clientY;
     determined = false;
-    isHoriz = false;
+    isHoriz    = false;
     item.style.transition = "none";
   }, { passive: true });
 
@@ -689,7 +1103,7 @@ function _addSwipeDelete(row, item, id) {
     const dy = e.touches[0].clientY - y0;
     if (!determined && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
       determined = true;
-      isHoriz = Math.abs(dx) > Math.abs(dy);
+      isHoriz    = Math.abs(dx) > Math.abs(dy);
     }
     if (!isHoriz) return;
     e.preventDefault();
@@ -702,9 +1116,9 @@ function _addSwipeDelete(row, item, id) {
 
   item.addEventListener("touchend", (e) => {
     if (!isHoriz) return;
-    const dx = e.changedTouches[0].clientX - x0;
-    const netDx = revealed ? dx - REVEAL : dx;
-    snap(netDx < -(REVEAL / 2));
+    const dx  = e.changedTouches[0].clientX - x0;
+    const net = revealed ? dx - REVEAL : dx;
+    snap(net < -(REVEAL / 2));
     setTimeout(() => { item.dataset.swiped = ""; }, 50);
   });
 
@@ -716,11 +1130,11 @@ function _addSwipeDelete(row, item, id) {
 
 async function _deleteHistoryRow(id, row) {
   const h = row.offsetHeight;
-  row.style.height = h + "px";
-  row.style.overflow = "hidden";
+  row.style.height     = h + "px";
+  row.style.overflow   = "hidden";
   row.style.transition = "height 0.2s ease, opacity 0.15s ease";
   requestAnimationFrame(() => {
-    row.style.height = "0";
+    row.style.height  = "0";
     row.style.opacity = "0";
   });
   await api("DELETE", `/history/${id}`);
@@ -734,10 +1148,9 @@ async function _deleteHistoryRow(id, row) {
 
 function timeAgo(ts) {
   if (!ts) return "";
-  // seen_at is a Unix epoch integer (seconds). Plain arithmetic, no parsing.
   const diff = Date.now() / 1000 - Number(ts);
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
+  if (diff < 60)    return "just now";
+  if (diff < 3600)  return `${Math.floor(diff / 60)} min ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
 }
@@ -765,7 +1178,7 @@ function closeModal() {
 function _trapFocus(e) {
   if (e.key === "Escape") { e.preventDefault(); closeModal(); return; }
   if (e.key !== "Tab") return;
-  const els = Array.from(modalPreset.querySelectorAll(FOCUSABLE_SEL));
+  const els  = Array.from(modalPreset.querySelectorAll(FOCUSABLE_SEL));
   if (!els.length) return;
   const first = els[0], last = els[els.length - 1];
   if (e.shiftKey && document.activeElement === first) {
@@ -787,9 +1200,11 @@ function esc(s) {
 // Event wiring
 // ---------------------------------------------------------------------------
 
-// Signal strength tooltip
+// Signal strength tooltip + long-press for diagnostics on phone
 const signalTooltipEl = document.getElementById("signal-tooltip");
 const signalMeterEl   = document.getElementById("signal-meter");
+let _diagLongPress = null;
+
 signalMeterEl?.addEventListener("mouseenter", () => {
   if (!signalTooltipEl) return;
   const label = signalMeterEl.dataset.signalLabel || "No signal";
@@ -803,6 +1218,23 @@ signalMeterEl?.addEventListener("mouseleave", () => {
   signalTooltipEl?.classList.remove("visible");
 });
 
+// Long-press on signal meter (phone) → open diagnostics drawer
+signalMeterEl?.addEventListener("pointerdown", () => {
+  _diagLongPress = setTimeout(() => {
+    // Switch to library tab and open diagnostics
+    if (window.innerWidth < 640) {
+      activateTab("library");
+      setTimeout(() => {
+        const drawer = document.getElementById("diagnostics-drawer");
+        if (drawer) { drawer.open = true; drawer.scrollIntoView({ behavior: "smooth", block: "start" }); }
+      }, 300);
+    }
+  }, 600);
+});
+signalMeterEl?.addEventListener("pointerup",     () => clearTimeout(_diagLongPress));
+signalMeterEl?.addEventListener("pointermove",   () => clearTimeout(_diagLongPress));
+signalMeterEl?.addEventListener("pointercancel", () => clearTimeout(_diagLongPress));
+
 // Band tabs
 document.querySelectorAll(".band-tab").forEach(tab => {
   tab.addEventListener("click", () => setBand(tab.dataset.band));
@@ -813,7 +1245,7 @@ setupStepButton(document.getElementById("btn-step-down"), -1);
 setupStepButton(document.getElementById("btn-step-up"),   +1);
 
 // Dial scrub (preview) then commit on release
-dial.addEventListener("input", () => setFreq(parseFloat(dial.value)));
+dial.addEventListener("input",  () => setFreq(parseFloat(dial.value)));
 dial.addEventListener("change", () => tune(currentFreq));
 
 // Manual frequency input
@@ -834,7 +1266,7 @@ btnPlay.addEventListener("click", () => {
 });
 
 player.addEventListener("play",    () => setPlayState(true));
-player.addEventListener("playing", () => setPlayState(true));  // also fires after buffering resumes
+player.addEventListener("playing", () => setPlayState(true));
 player.addEventListener("pause",   () => setPlayState(false));
 player.addEventListener("ended",   () => setPlayState(false));
 player.addEventListener("error",   () => setPlayState(false));
@@ -849,7 +1281,7 @@ btnRecord.addEventListener("click", async () => {
     isRecording = false;
     btnRecord.classList.remove("active");
     btnRecord.setAttribute("aria-pressed", "false");
-    btnRecord.setAttribute("aria-label", "Start recording");
+    btnRecord.setAttribute("aria-label",   "Start recording");
     loadRecordings();
   } else {
     const res = await api("POST", "/record/start");
@@ -857,7 +1289,7 @@ btnRecord.addEventListener("click", async () => {
       isRecording = true;
       btnRecord.classList.add("active");
       btnRecord.setAttribute("aria-pressed", "true");
-      btnRecord.setAttribute("aria-label", "Stop recording");
+      btnRecord.setAttribute("aria-label",   "Stop recording");
     }
   }
 });
@@ -871,29 +1303,59 @@ btnSavePreset.addEventListener("click", () => {
 btnPresetCancel.addEventListener("click", closeModal);
 btnPresetSave.addEventListener("click", async () => {
   const name = presetNameInput.value.trim();
-  if (name) {
-    await saveCurrentPreset(name);
-    closeModal();
-  }
+  if (name) { await saveCurrentPreset(name); closeModal(); }
 });
 presetNameInput.addEventListener("keydown", e => { if (e.key === "Enter") btnPresetSave.click(); });
 modalPreset.addEventListener("click", e => { if (e.target === modalPreset) closeModal(); });
+
+// Bottom nav tabs
+document.querySelectorAll(".nav-tab").forEach(t => {
+  t.addEventListener("click", () => activateTab(t.dataset.panel));
+});
+
+// Desktop diagnostics toggle — opens/scrolls to the drawer
+document.getElementById("btn-diag-toggle")?.addEventListener("click", function() {
+  const drawer = document.getElementById("diagnostics-drawer");
+  if (!drawer) return;
+  drawer.open = !drawer.open;
+  saveLayoutPref("diagOpen", drawer.open);
+  this.setAttribute("aria-expanded", String(drawer.open));
+  if (drawer.open) drawer.scrollIntoView({ behavior: "smooth", block: "nearest" });
+});
+
+// Persist diagnostics state when toggled natively
+document.getElementById("diagnostics-drawer")?.addEventListener("toggle", function() {
+  saveLayoutPref("diagOpen", this.open);
+  const btn = document.getElementById("btn-diag-toggle");
+  if (btn) btn.setAttribute("aria-expanded", String(this.open));
+});
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
 setBand("fm");
+initPanels();
+setupMiniPlayer();
+setupFreqStrip();
 connectWs();
 loadPresets();
 loadRecordings();
 loadHistory();
+loadLayoutPrefs();
 
 api("GET", "/record/status").then(s => {
   if (s.recording) {
     isRecording = true;
     btnRecord.classList.add("active");
     btnRecord.setAttribute("aria-pressed", "true");
-    btnRecord.setAttribute("aria-label", "Stop recording");
+    btnRecord.setAttribute("aria-label",   "Stop recording");
   }
+});
+
+// Redraw freq strip on window resize
+let _stripResizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(_stripResizeTimer);
+  _stripResizeTimer = setTimeout(drawFreqStrip, 150);
 });
