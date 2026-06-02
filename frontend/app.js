@@ -413,11 +413,9 @@ function applyPpState(pp, band) {
   }
 
   const bypassBtn = document.getElementById("btn-pp-bypass");
-  if (bypassBtn) bypassBtn.style.display = enabled ? "" : "none";
-
-  const bypassBtn = document.getElementById("btn-pp-bypass");
   if (bypassBtn) {
-    bypassBtn.textContent = bypassed ? "Resume" : "Bypass";
+    bypassBtn.style.display = enabled ? "" : "none";
+    bypassBtn.textContent   = bypassed ? "Resume" : "Bypass";
     bypassBtn.setAttribute("aria-pressed", String(bypassed));
   }
 
