@@ -34,7 +34,9 @@ _AVIATION_HI = 137e6
 # every output sample falls within the edge artifact zone, producing a 43 Hz AM wobble
 # at the block rate.  Prepending the last _HD_RESAMP_HALFLEN input samples as left
 # context and trimming the corresponding output eliminates the dominant left-edge
-# transient.  padtype='line' (linear extrapolation) further reduces right-edge ringing.
+# transient.  The right edge uses the default padtype='constant' (freeze at last
+# sample) — acoustically neutral; linear extrapolation was tried but created a
+# phase-mismatched "phantom" of speech that sounded like a small-room reflection.
 _HD_RESAMP_HALFLEN = 1600                          # 10 × max(160, 147)
 _HD_RESAMP_TRIM    = round(_HD_RESAMP_HALFLEN * 160 / 147)   # ≈ 1741 output samples to strip
 
@@ -156,12 +158,16 @@ class RadioManager:
             r_in = np.asarray(pcm_r, np.float32)
 
             # Prepend left context, resample, strip the prepended region from output.
-            # padtype='line' extrapolates the right edge linearly, significantly
-            # reducing the right-edge ringing vs. the default padtype='constant'.
+            # padtype='constant' (scipy default) freezes the right edge at the last
+            # sample value — a neutral, inaudible roll-off.  padtype='line' was tried
+            # but linear extrapolation of the block's instantaneous slope creates a
+            # phase-mismatched "phantom continuation" of speech that the symmetric FIR
+            # folds back into the current block's output as a subtle room-reflection
+            # artefact ("cramped/echoey" voices).
             l = resample_poly(np.concatenate([_ctx_l, l_in]),
-                              160, 147, padtype='line').astype(np.float32)[_HD_RESAMP_TRIM:]
+                              160, 147).astype(np.float32)[_HD_RESAMP_TRIM:]
             r = resample_poly(np.concatenate([_ctx_r, r_in]),
-                              160, 147, padtype='line').astype(np.float32)[_HD_RESAMP_TRIM:]
+                              160, 147).astype(np.float32)[_HD_RESAMP_TRIM:]
 
             # Update context: save the tail of the current input for next call.
             tail = min(len(l_in), _HD_RESAMP_HALFLEN)
