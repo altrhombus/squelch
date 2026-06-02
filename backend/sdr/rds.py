@@ -372,8 +372,8 @@ class RdsDecoder:
             if c == _RTP_APP_ID:
                 self._rtp_group_type = (b >> 1) & 0xF
                 self._rtp_group_ver  =  b & 0x1
-                logger.debug("RDS RT+ announced on group %d%s",
-                             self._rtp_group_type, "B" if self._rtp_group_ver else "A")
+                logger.info("RDS RT+ active on group %d%s",
+                            self._rtp_group_type, "B" if self._rtp_group_ver else "A")
 
         elif (self._rtp_group_type is not None
               and group_type == self._rtp_group_type
@@ -419,9 +419,9 @@ class RdsDecoder:
                             update["rtp_artist"] = v
 
                 if "rtp_title" in update or "rtp_artist" in update:
-                    logger.debug("RDS RT+ decoded: %s",
-                                 {k: update[k] for k in ("rtp_title", "rtp_artist")
-                                  if k in update})
+                    logger.info("RDS RT+ tags: %s",
+                                {k: update[k] for k in ("rtp_title", "rtp_artist")
+                                 if k in update})
 
         if update:
             logger.debug("RDS group decoded: type=%d%s %s", group_type, "B" if b0 else "A", update)
