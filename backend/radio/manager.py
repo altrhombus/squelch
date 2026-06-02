@@ -120,12 +120,19 @@ class RadioManager:
 
     async def _start_hd(self, freq_hz: float):
         encoder = AacEncoder(stereo=True)
+        _live = [False]  # mutable flag for the pcm_cb closure
 
         def meta_cb(data: dict):
             self._meta.update_nrsc5(**data)
 
         def pcm_cb(pcm_l: object, pcm_r: object):
             import numpy as np
+            # Transition to "live" on the first audio chunk so the frontend
+            # stops showing "Buffering…" and displays station metadata instead.
+            if not _live[0]:
+                _live[0] = True
+                self._meta.update_state("live")
+                asyncio.ensure_future(self._meta.broadcast())
             # nrsc5 outputs 44100 Hz; resample to 48000 Hz (ratio 160/147) so the
             # AacEncoder (initialized at 48000 Hz) gets correctly-timed samples.
             l = resample_poly(np.asarray(pcm_l, np.float32), 160, 147).astype(np.float32)

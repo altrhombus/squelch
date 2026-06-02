@@ -179,13 +179,17 @@ class Nrsc5Backend:
             self._metadata_cb(update)
 
     async def _drain_stderr(self):
+        """Read stderr and parse it for metadata — nrsc5 sends informational
+        output (Station name, Synchronized, Title, …) to stderr on most builds."""
         try:
             while True:
                 line = await self._process.stderr.readline()
                 if not line:
                     break
-                logger.debug("nrsc5: %s", line.decode(errors="replace").rstrip())
+                decoded = line.decode(errors="replace").rstrip()
+                logger.debug("nrsc5: %s", decoded)
+                self._handle_line(decoded)
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.debug("nrsc5 stderr: %s", e)
+            logger.debug("nrsc5 stderr error: %s", e)
