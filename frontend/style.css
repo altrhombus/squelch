@@ -521,6 +521,7 @@ h2 {
   position: relative;
   border-radius: 8px;
   overflow: hidden;
+  flex-shrink: 0; /* prevent the flex list from compressing items instead of scrolling */
 }
 
 /* Red delete zone revealed by the swipe */
