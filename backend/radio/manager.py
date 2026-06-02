@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 _AVIATION_LO = 118e6
 _AVIATION_HI = 137e6
 
+# nrsc5 outputs 44100 Hz PCM; we resample to 48000 Hz via resample_poly(160, 147).
+# The default FIR half-length is 10 × max(up, down) = 1600 samples — longer than the
+# typical PCM block (~1024 samples).  Without carrying filter state between calls,
+# every output sample falls within the edge artifact zone, producing a 43 Hz AM wobble
+# at the block rate.  Prepending the last _HD_RESAMP_HALFLEN input samples as left
+# context and trimming the corresponding output eliminates the dominant left-edge
+# transient.  padtype='line' (linear extrapolation) further reduces right-edge ringing.
+_HD_RESAMP_HALFLEN = 1600                          # 10 × max(160, 147)
+_HD_RESAMP_TRIM    = round(_HD_RESAMP_HALFLEN * 160 / 147)   # ≈ 1741 output samples to strip
+
 
 class RadioManager:
     def __init__(self, config: dict, metadata: MetadataState, streaming: StreamingManager):
@@ -122,21 +132,53 @@ class RadioManager:
         encoder = AacEncoder(stereo=True)
         _live = [False]  # mutable flag for the pcm_cb closure
 
+        # Resampler left-context state — persists across pcm_cb calls.
+        # Carries the tail of the previous input block so the FIR filter has
+        # proper left-side context, eliminating the block-rate (43 Hz) AM wobble.
+        _ctx_l = np.zeros(_HD_RESAMP_HALFLEN, dtype=np.float32)
+        _ctx_r = np.zeros(_HD_RESAMP_HALFLEN, dtype=np.float32)
+
         def meta_cb(data: dict):
             self._meta.update_nrsc5(**data)
 
         def pcm_cb(pcm_l: object, pcm_r: object):
-            import numpy as np
+            nonlocal _ctx_l, _ctx_r
+
             # Transition to "live" on the first audio chunk so the frontend
             # stops showing "Buffering…" and displays station metadata instead.
             if not _live[0]:
                 _live[0] = True
                 self._meta.update_state("live")
                 asyncio.ensure_future(self._meta.broadcast())
-            # nrsc5 outputs 44100 Hz; resample to 48000 Hz (ratio 160/147) so the
-            # AacEncoder (initialized at 48000 Hz) gets correctly-timed samples.
-            l = resample_poly(np.asarray(pcm_l, np.float32), 160, 147).astype(np.float32)
-            r = resample_poly(np.asarray(pcm_r, np.float32), 160, 147).astype(np.float32)
+
+            l_in = np.asarray(pcm_l, np.float32)
+            r_in = np.asarray(pcm_r, np.float32)
+
+            # Prepend left context, resample, strip the prepended region from output.
+            # padtype='line' extrapolates the right edge linearly, significantly
+            # reducing the right-edge ringing vs. the default padtype='constant'.
+            l = resample_poly(np.concatenate([_ctx_l, l_in]),
+                              160, 147, padtype='line').astype(np.float32)[_HD_RESAMP_TRIM:]
+            r = resample_poly(np.concatenate([_ctx_r, r_in]),
+                              160, 147, padtype='line').astype(np.float32)[_HD_RESAMP_TRIM:]
+
+            # Update context: save the tail of the current input for next call.
+            tail = min(len(l_in), _HD_RESAMP_HALFLEN)
+            _ctx_l = np.pad(l_in[-tail:], (_HD_RESAMP_HALFLEN - tail, 0))
+            _ctx_r = np.pad(r_in[-tail:], (_HD_RESAMP_HALFLEN - tail, 0))
+
+            # Click blanker — interpolate over nrsc5 glitch bursts (corrupt decoder
+            # output when sync is briefly lost).  Threshold matches the FM soft-limiter
+            # knee; legitimate HD audio rarely reaches this level.
+            for sig in (l, r):
+                ck        = np.abs(sig) > 0.85
+                ck[1:]   |= ck[:-1]
+                ck[:-1]  |= ck[1:]
+                if ck.any():
+                    xi = np.where(~ck)[0]
+                    if len(xi) >= 2:
+                        sig[ck] = np.interp(np.where(ck)[0], xi, sig[xi])
+
             chunk = encoder.encode(l, r)
             if chunk:
                 self._streams.broadcast(chunk)

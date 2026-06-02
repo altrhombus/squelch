@@ -62,25 +62,33 @@ _MINSTAT_UPDATE_EVERY = 8
 # the floor conservatively below the true per-bin noise so the Wiener cannot
 # over-subtract.  Slightly under-estimating is safe; over-estimating is not.
 _PHYS_SCALE   = 200.0
-# Minimum Wiener gain per bin.  Prevents gain from collapsing to near-zero at
-# noise-only frequencies, which creates a large per-frame spectral contrast
-# between formant bins (gain≈1) and inter-formant bins (gain→0) that sounds
-# "watery" on voices, especially on weak stations.  0.24 = −12 dB floor;
-# reduces worst-case contrast from ~20:1 to ~4:1 without audible noise increase.
+# Adaptive Wiener gain floor.
+# On weak signals the floor must be high enough (−12 dB) to prevent the "watery"
+# artefact on voices: on marginal SNR, many inter-formant bins hover near zero and
+# a high contrast between formant (gain≈1) and inter-formant (gain→0) bins causes
+# an uneven spectral pattern that sounds "watery."
+# On strong signals (high blend) the noise floor is genuinely low and the floor
+# only affects bins that are truly noise-only.  A lower floor (−20 dB) suppresses
+# the residual noise that becomes audible as LF "rumble" and HF "static" at high
+# headphone volumes, without meaningfully changing voice tonality (auditory masking
+# by the strong formants covers the inter-formant floor).
 # Applied to the OUTPUT gain only — DD state (prev_gain) retains the unfloored
 # Wiener value so the temporal smoother's feedback is not distorted.
-_WIENER_FLOOR = 0.24
+# Signal quality (blend factor 0–1) is passed in at call time.
+_WIENER_FLOOR        = 0.24   # −12 dB — weak-signal floor (blend → 0)
+_WIENER_FLOOR_STRONG = 0.10   # −20 dB — strong-signal floor (blend → 1)
 
 # Asymmetric per-bin temporal smoother applied to the final output gain.
 # Fricatives ("S", "F") have inherently micro-modulated energy: their amplitude
 # is never perfectly constant, so the DD forward path (1-α)·max(γ-1,0) reacts
 # to every STFT frame's SNR micro-dip and drives the gain up and down at the
 # ~93 Hz hop rate — audible as a warble on sibilant consonants.
-# Fast RISE (τ≈9 ms, 1 frame) preserves consonant onset fidelity.
+# Fast RISE (τ≈5 ms, <1 frame) preserves consonant onset fidelity; also reduces
+# first-frame attenuation on cymbal attacks from 2.2 dB (α=0.3) to 0.7 dB (α=0.1).
 # Slow FALL (τ≈30 ms, ~3 frames) smooths the inter-frame gain oscillation.
 # The DD state (prev_gain/prev_gamma) still tracks the raw unfloored Wiener
 # gain so the temporal smoother's feedback loop is not affected.
-_GAIN_SMOOTH_RISE = 0.3   # α for rising gain  — τ = -hop/sr / ln(0.3) ≈  9 ms
+_GAIN_SMOOTH_RISE = 0.1   # α for rising gain  — τ = -hop/sr / ln(0.1) ≈  5 ms
 _GAIN_SMOOTH_FALL = 0.7   # α for falling gain — τ = -hop/sr / ln(0.7) ≈ 30 ms
 
 # ITU-R BS.1770-4 K-weighting filter — two cascaded biquads, pre-computed for 48 kHz.
@@ -188,7 +196,8 @@ class _SpectralSubtractor:
         self._ola   = np.zeros(n_fft,    dtype=np.float64)
 
     def process(self, x: np.ndarray, update_noise: bool,
-                noise_rms_smooth: float = 0.0) -> np.ndarray:
+                noise_rms_smooth: float = 0.0,
+                signal_quality: float = 0.0) -> np.ndarray:
         N = len(x)
         self._in_q = np.concatenate([self._in_q, x.astype(np.float32)])
 
@@ -247,10 +256,13 @@ class _SpectralSubtractor:
             self._prev_gain  = gain
             self._prev_gamma = gamma
 
-            # Minimum gain floor — limits worst-case attenuation to −14 dB and
-            # reduces the inter-formant vs formant gain contrast that sounds
-            # "watery" on voices at low SNR.
-            gain_f = np.maximum(gain, _WIENER_FLOOR)
+            # Adaptive gain floor — interpolated between weak (0.24) and strong
+            # (0.10) based on signal_quality (blend factor passed in from the
+            # demodulator).  Preserves anti-watery floor on weak signals; reduces
+            # residual LF/HF noise floor on strong signals heard on headphones.
+            floor  = (_WIENER_FLOOR_STRONG
+                      + (1.0 - signal_quality) * (_WIENER_FLOOR - _WIENER_FLOOR_STRONG))
+            gain_f = np.maximum(gain, floor)
 
             # Two-pass 3-bin frequency smoother on the floored gain — equivalent
             # to [0.0625, 0.25, 0.375, 0.25, 0.0625] 5-bin Gaussian-like kernel.
@@ -552,8 +564,8 @@ class FmStereoDemodulator:
         r32       = r.astype(np.float32)
         rms_pre   = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
         in_noise  = rms_pre <= _AGC_GATE
-        l32       = self._ss_l.process(l32, in_noise, self._noise_rms_smooth)
-        r32       = self._ss_r.process(r32, in_noise, self._noise_rms_smooth)
+        l32       = self._ss_l.process(l32, in_noise, self._noise_rms_smooth, blend)
+        r32       = self._ss_r.process(r32, in_noise, self._noise_rms_smooth, blend)
 
         # 9b. De-emphasis (75 µs)
         l, self._de_l_zi = lfilter(self._de_b, self._de_a, l32, zi=self._de_l_zi)
