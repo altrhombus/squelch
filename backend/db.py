@@ -48,7 +48,7 @@ async def init_db():
                 pty TEXT,
                 frequency REAL,
                 band TEXT,
-                seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                seen_at INTEGER NOT NULL
             )
         """)
         await db.execute("""

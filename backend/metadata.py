@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import shutil
-import time
+import time as _time
 from typing import Optional
 from fastapi import WebSocket
 
@@ -241,6 +241,7 @@ class MetadataState:
         if key == self._last_history_key:
             return
         from .db import get_db
+        now = int(_time.time())
         db = await get_db()
         try:
             # If we already have an entry for this exact song in the last 5
@@ -250,9 +251,9 @@ class MetadataState:
             async with db.execute(
                 """SELECT id FROM history
                    WHERE artist = ? AND title = ?
-                     AND seen_at > datetime('now', '-5 minutes')
+                     AND seen_at > ?
                    ORDER BY seen_at DESC LIMIT 1""",
-                (self.artist, self.title),
+                (self.artist, self.title, now - 300),
             ) as cur:
                 recent = await cur.fetchone()
 
@@ -263,9 +264,10 @@ class MetadataState:
                 )
             else:
                 await db.execute(
-                    """INSERT INTO history (station_name, artist, title, pty, frequency, band)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (self.station_name, self.artist, self.title, self.pty, self.frequency, self.band),
+                    """INSERT INTO history (station_name, artist, title, pty, frequency, band, seen_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (self.station_name, self.artist, self.title, self.pty,
+                     self.frequency, self.band, now),
                 )
             self._last_history_key = key
             await db.commit()

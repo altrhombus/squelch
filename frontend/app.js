@@ -642,14 +642,10 @@ async function clearHistory() {
   }
 }
 
-function timeAgo(dateStr) {
-  if (!dateStr) return "";
-  // SQLite CURRENT_TIMESTAMP produces "2024-01-15 15:30:00" — UTC but no
-  // timezone suffix. new Date() would parse the space-separated form as
-  // local time, putting it hours in the future and making diff negative.
-  // Rewrite to ISO 8601 with explicit Z so it is always read as UTC.
-  const iso = dateStr.includes("T") ? dateStr : dateStr.replace(" ", "T") + "Z";
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+function timeAgo(ts) {
+  if (!ts) return "";
+  // seen_at is a Unix epoch integer (seconds). Plain arithmetic, no parsing.
+  const diff = Date.now() / 1000 - Number(ts);
   if (diff < 60) return "just now";
   if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
@@ -747,10 +743,11 @@ btnPlay.addEventListener("click", () => {
   }
 });
 
-player.addEventListener("play",  () => setPlayState(true));
-player.addEventListener("pause", () => setPlayState(false));
-player.addEventListener("ended", () => setPlayState(false));
-player.addEventListener("error", () => setPlayState(false));
+player.addEventListener("play",    () => setPlayState(true));
+player.addEventListener("playing", () => setPlayState(true));  // also fires after buffering resumes
+player.addEventListener("pause",   () => setPlayState(false));
+player.addEventListener("ended",   () => setPlayState(false));
+player.addEventListener("error",   () => setPlayState(false));
 
 // Volume
 volume.addEventListener("input", () => { player.volume = parseFloat(volume.value); });
