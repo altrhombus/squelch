@@ -123,20 +123,48 @@ class StreamingManager:
     (live radio — no seeking, slow clients just skip a frame).
     """
 
-    MAX_QUEUE = 12   # ~12 blocks ≈ 660 ms of audio buffer per client
+    MAX_QUEUE = 8    # ~8 blocks ≈ 1.75 s of audio buffer per client (blocks are 218 ms each)
+
+    # Seconds with zero clients before DSP is suspended.  Short enough that a
+    # page refresh doesn't cause a brief silence gap on reconnect; long enough
+    # that an active recording keeps DSP running even if the browser tab closes.
+    IDLE_GRACE_SECS = 30
 
     def __init__(self):
         self._clients: set[asyncio.Queue] = set()
+        # Set when at least one client is connected; cleared after IDLE_GRACE_SECS
+        # with no clients.  pipeline.py awaits this before dispatching to the DSP
+        # executor so all demodulation / encoding is suspended while idle.
+        self._active_event: asyncio.Event = asyncio.Event()
+        self._idle_task: Optional[asyncio.Task] = None
 
     def new_client(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=self.MAX_QUEUE)
         self._clients.add(q)
+        # Cancel any pending idle countdown and immediately mark DSP as needed.
+        if self._idle_task and not self._idle_task.done():
+            self._idle_task.cancel()
+            self._idle_task = None
+        self._active_event.set()
         logger.debug("Audio client connected (%d total)", len(self._clients))
         return q
 
     def remove_client(self, q: asyncio.Queue):
         self._clients.discard(q)
         logger.debug("Audio client disconnected (%d total)", len(self._clients))
+        if not self._clients and not (self._idle_task and not self._idle_task.done()):
+            self._idle_task = asyncio.ensure_future(self._idle_after_grace())
+
+    async def _idle_after_grace(self):
+        """Clear the active event after a grace period, suspending DSP."""
+        await asyncio.sleep(self.IDLE_GRACE_SECS)
+        if not self._clients:
+            self._active_event.clear()
+            logger.info("No audio clients for %ds — DSP suspended", self.IDLE_GRACE_SECS)
+
+    async def wait_for_clients(self):
+        """Await until at least one client is connected (or reconnects)."""
+        await self._active_event.wait()
 
     def broadcast(self, chunk: bytes):
         if not chunk or not self._clients:

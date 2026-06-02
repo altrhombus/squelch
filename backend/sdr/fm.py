@@ -17,7 +17,24 @@ Filter state is maintained between blocks for seamless streaming.
 """
 
 import numpy as np
+from concurrent.futures import wait as _futures_wait, FIRST_EXCEPTION
 from scipy.signal import butter, sosfilt, sosfilt_zi, lfilter, resample_poly, hilbert
+from scipy.fft import rfft as _rfft, irfft as _irfft
+
+# Use pyfftw as the scipy.fft backend if available — FFTW uses ARM NEON SIMD
+# on Pi 4 and is significantly faster than the default pocketfft for the fixed
+# 1024-point transforms used in _SpectralSubtractor.
+try:
+    import pyfftw
+    import pyfftw.interfaces.scipy_fft as _pf
+    from scipy.fft import set_backend as _set_fft_backend
+    _set_fft_backend(_pf)
+    pyfftw.interfaces.cache.enable()
+    pyfftw.interfaces.cache.set_keepalive_time(30)
+    import logging as _log
+    _log.getLogger(__name__).info("pyfftw FFTW backend active for spectral subtraction")
+except ImportError:
+    pass
 
 # 1.2 MHz is sufficient for the FM composite (L+R to 15 kHz, L-R to 53 kHz,
 # RDS at 57 kHz — well below the 600 kHz Nyquist limit).  Using 2.4 MHz
@@ -191,19 +208,27 @@ class _SpectralSubtractor:
         self._sub_mask    = np.clip((16_000.0 - _freqs) / 1_000.0,
                                     0.0, 1.0).astype(np.float64)
 
-        self._in_q  = np.empty(0, dtype=np.float32)
-        self._out_q = np.empty(0, dtype=np.float32)
-        self._ola   = np.zeros(n_fft,    dtype=np.float64)
+        # Pre-allocated I/O ring buffers — avoids np.concatenate allocations in
+        # the hot STFT loop.  Capacity 16×n_fft comfortably handles any block
+        # size the pipeline will send (current: ~5k samples, doubled: ~10k).
+        _buf_cap      = n_fft * 16
+        self._in_buf  = np.zeros(_buf_cap, dtype=np.float32)
+        self._in_len  = 0
+        self._out_buf = np.zeros(_buf_cap, dtype=np.float32)
+        self._out_len = 0
+        self._ola     = np.zeros(n_fft, dtype=np.float64)
 
     def process(self, x: np.ndarray, update_noise: bool,
                 noise_rms_smooth: float = 0.0,
                 signal_quality: float = 0.0) -> np.ndarray:
-        N = len(x)
-        self._in_q = np.concatenate([self._in_q, x.astype(np.float32)])
+        N   = len(x)
+        x32 = x.astype(np.float32)
+        self._in_buf[self._in_len:self._in_len + N] = x32
+        self._in_len += N
 
-        while len(self._in_q) >= self._n_fft:
-            frame = self._in_q[:self._n_fft].astype(np.float64) * self._win
-            X     = np.fft.rfft(frame)
+        while self._in_len >= self._n_fft:
+            frame = self._in_buf[:self._n_fft].astype(np.float64) * self._win
+            X     = _rfft(frame)
             power = X.real ** 2 + X.imag ** 2
 
             # MinStat update — every frame, silence or not.
@@ -281,23 +306,28 @@ class _SpectralSubtractor:
             # Where mask=0 (above FM audio bandwidth) force gain to 1.
             X_out = X * (self._sub_mask * g_out + (1.0 - self._sub_mask))
 
-            frame_out                          = np.fft.irfft(X_out, n=self._n_fft) * self._win
+            frame_out                          = _irfft(X_out, n=self._n_fft) * self._win
             self._ola                         += frame_out
             ready                              = self._ola[:self._hop].copy()
             self._ola[:self._n_fft-self._hop]  = self._ola[self._hop:]
             self._ola[self._n_fft-self._hop:]  = 0.0
-            self._out_q     = np.concatenate([self._out_q,
-                                               ready.astype(np.float32)])
-            self._in_q      = self._in_q[self._hop:]
+            # Append hop samples to output buffer (no allocation).
+            self._out_buf[self._out_len:self._out_len + self._hop] = ready.astype(np.float32)
+            self._out_len += self._hop
+            # Consume one hop from input buffer (in-place left-shift, no allocation).
+            rem = self._in_len - self._hop
+            self._in_buf[:rem] = self._in_buf[self._hop:self._in_len]
+            self._in_len = rem
 
-        if len(self._out_q) >= N:
-            out         = self._out_q[:N].copy()
-            self._out_q = self._out_q[N:]
+        if self._out_len >= N:
+            out = self._out_buf[:N].copy()
+            rem = self._out_len - N
+            self._out_buf[:rem] = self._out_buf[N:self._out_len]
+            self._out_len = rem
         else:
-            out         = np.concatenate([self._out_q,
-                                           np.zeros(N - len(self._out_q),
-                                                    dtype=np.float32)])
-            self._out_q = np.empty(0, dtype=np.float32)
+            out = np.zeros(N, dtype=np.float32)
+            out[:self._out_len] = self._out_buf[:self._out_len]
+            self._out_len = 0
         return out
 
 
@@ -318,7 +348,7 @@ class FmStereoDemodulator:
     last_blend:        float = 0.0   # stereo blend factor 0-1
     last_audio_rms:    float = 0.0   # decoded output level
 
-    def __init__(self, deemphasis_us: int = 75, stereo_mode: str = "auto"):
+    def __init__(self, deemphasis_us: int = 75, stereo_mode: str = "auto", ss_executor=None):
         # --- audio bandpass/lowpass filter coefficients (SOS) ---
         # Single L+R path at full 15 kHz FM bandwidth.  A blended narrow path
         # (8 kHz) was previously used to reduce HF hiss on weak signals; the
@@ -401,6 +431,11 @@ class FmStereoDemodulator:
         # --- spectral noise subtraction (one instance per channel) ---
         self._ss_l = _SpectralSubtractor()
         self._ss_r = _SpectralSubtractor()
+        # Optional executor for running L and R subtraction in parallel.
+        # When provided (passed from RadioPipeline), the two independent channels
+        # are submitted concurrently; NumPy FFT releases the GIL so both run on
+        # separate cores.  Falls back to sequential when None.
+        self._ss_executor = ss_executor
 
         # --- K-weighting filter state (ITU-R BS.1770, per channel) ---
         self._kw_l_zi      = _zero_zi(_K_WEIGHT_SOS)
@@ -564,8 +599,20 @@ class FmStereoDemodulator:
         r32       = r.astype(np.float32)
         rms_pre   = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
         in_noise  = rms_pre <= _AGC_GATE
-        l32       = self._ss_l.process(l32, in_noise, self._noise_rms_smooth, blend)
-        r32       = self._ss_r.process(r32, in_noise, self._noise_rms_smooth, blend)
+        if self._ss_executor is not None:
+            # Submit L and R to the dedicated 2-worker pool so they run on
+            # separate cores.  concurrent.futures.wait() blocks this executor
+            # thread (not the event loop) until both channels are done.
+            f_l = self._ss_executor.submit(
+                self._ss_l.process, l32, in_noise, self._noise_rms_smooth, blend)
+            f_r = self._ss_executor.submit(
+                self._ss_r.process, r32, in_noise, self._noise_rms_smooth, blend)
+            _futures_wait([f_l, f_r], return_when=FIRST_EXCEPTION)
+            l32 = f_l.result()
+            r32 = f_r.result()
+        else:
+            l32 = self._ss_l.process(l32, in_noise, self._noise_rms_smooth, blend)
+            r32 = self._ss_r.process(r32, in_noise, self._noise_rms_smooth, blend)
 
         # 9b. De-emphasis (75 µs)
         l, self._de_l_zi = lfilter(self._de_b, self._de_a, l32, zi=self._de_l_zi)

@@ -9,3 +9,4 @@ pyrtlsdr>=0.2.7,<0.3.0
 av>=12.0.0
 numpy>=1.24.0
 scipy>=1.11.0
+pyfftw>=0.13.0

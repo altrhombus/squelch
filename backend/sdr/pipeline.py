@@ -8,7 +8,7 @@ AM / Scanner: 1.2 MHz sample rate, mono, AM uses direct sampling
 
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait, FIRST_EXCEPTION
 from typing import Optional
 
 import numpy as np
@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 
 _FM_SR   = 1_200_000   # 2.4 MHz caused queue overflow; 1.2 MHz is sufficient for FM stereo + RDS
 _AM_SR   = 1_200_000
-_BLOCK   = 131_072      # IQ samples per SDR read (≈ 55 ms at 2.4 MHz)
-_AM_BLOCK = 65_536      # IQ samples per read at 1.2 MHz (≈ 55 ms)
+_BLOCK    = 262_144     # IQ samples per SDR read (≈ 218 ms at 1.2 MHz); doubled from 131072 to
+                        # halve per-block Python overhead with no audio quality impact
+_AM_BLOCK = 131_072     # IQ samples per read at 1.2 MHz (≈ 109 ms)
 
 # RTL-SDR / R820T2 software gain control for FM.
 # Hardware "auto" AGC targets ADC headroom, not FM SNR.  Above ~35 dB the
@@ -37,7 +38,7 @@ _IQ_RMS_LO        = 0.07   # below this: signal too weak, step up (was 0.10 — 
                             # aggressive; caused overshoot past SNR optimum)
 _IQ_RMS_HI        = 0.38   # above this: ADC saturation risk, step down
 _NOISE_RATIO_MAX  = 2.0    # noise_rms/pilot_rms above this: step down for quality
-_GAIN_HOLD_BLOCKS = 50     # minimum blocks between gain steps (~5 s at 109 ms/block)
+_GAIN_HOLD_BLOCKS = 25     # minimum blocks between gain steps (~5 s at 218 ms/block)
 
 # Aviation band uses AM demodulation even though it's a "scanner" band
 _AVIATION_LO = 118e6
@@ -62,7 +63,16 @@ class RadioPipeline:
         self._streams  = streaming_manager
         self._sdr      = None
         self._task: Optional[asyncio.Task] = None
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-dsp")
+        self._executor     = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-dsp")
+        # Dedicated 2-worker pool for parallel L/R spectral subtraction.
+        # Both channels are independent so they can run concurrently; NumPy
+        # FFT operations release the GIL, allowing genuine multi-core use.
+        self._ss_executor  = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sdr-ss")
+        # Fire-and-forget RDS executor — decouples RDS decoding from the
+        # DSP thread so AAC encoding proceeds immediately after FM demod.
+        # RDS metadata changes on ~1 s timescales; occasional dropped blocks
+        # (if the RDS thread lags) have no perceptible effect.
+        self._rds_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-rds")
         self._band: Optional[str] = None
         self._freq: Optional[float] = None
         self._demod = None
@@ -176,6 +186,10 @@ class RadioPipeline:
         hold_blocks = 0   # blocks since last gain step
         try:
             async for iq in sdr.stream(block):
+                # Suspend DSP (but keep reading from the SDR to avoid USB
+                # buffer overflows) until at least one browser/recorder client
+                # is connected.  Returns instantly when active.
+                await self._streams.wait_for_clients()
                 chunk = await loop.run_in_executor(
                     self._executor,
                     self._process, iq, encoder,
@@ -253,10 +267,11 @@ class RadioPipeline:
                 l, r, composite = self._demod.process(iq)
                 self._squelch_silence_n = len(l)
                 if self._rds is not None:
-                    try:
-                        self._rds.feed(composite)
-                    except Exception as e:
-                        logger.warning("RDS error: %s", e)
+                    # Fire-and-forget: submit RDS to its own thread so AAC
+                    # encoding can start immediately.  composite.copy() is
+                    # required — the FM demod and RDS thread must not share
+                    # the same array.  Errors are logged inside _rds_feed.
+                    self._rds_executor.submit(self._rds_feed, composite.copy())
                 return encoder.encode(l, r)
 
             elif self._band in ("am", "scanner"):
@@ -292,7 +307,8 @@ class RadioPipeline:
 
     def _make_demod(self, band: str, freq_hz: float, deemphasis_us: int, stereo_mode: str = "auto"):
         if band == "fm":
-            return FmStereoDemodulator(deemphasis_us=deemphasis_us, stereo_mode=stereo_mode)
+            return FmStereoDemodulator(deemphasis_us=deemphasis_us, stereo_mode=stereo_mode,
+                                       ss_executor=self._ss_executor)
         elif band == "scanner" and _AVIATION_LO <= freq_hz <= _AVIATION_HI:
             return AmDemodulator()
         elif band == "scanner":
@@ -300,6 +316,16 @@ class RadioPipeline:
         elif band == "am":
             return AmDemodulator()
         return None
+
+    def _rds_feed(self, composite: np.ndarray):
+        """Runs in _rds_executor thread — feeds composite to the RDS decoder."""
+        rds = self._rds
+        if rds is None:
+            return
+        try:
+            rds.feed(composite)
+        except Exception as e:
+            logger.warning("RDS error: %s", e)
 
     def _on_rds(self, data: dict):
         """Called from the executor thread — must not use asyncio directly."""
