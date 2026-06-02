@@ -53,7 +53,7 @@ _STEREO_RESTORE_MAX  = 1.2    # max side-channel boost at blend=0; scales linear
 # _MINSTAT_UPDATE_EVERY gates the scan to every N frames (~12 Hz); the noise
 # floor changes on timescales of seconds so 12 Hz is more than sufficient.
 _MINSTAT_FRAMES       = 128
-_MINSTAT_BIAS         = 1.25
+_MINSTAT_BIAS         = 1.66  # geometric mean of 1.25 and 2.0; Martin (2001) recommends 1.5-2.0
 _MINSTAT_UPDATE_EVERY = 8
 
 # ITU-R BS.1770-4 K-weighting filter — two cascaded biquads, pre-computed for 48 kHz.
