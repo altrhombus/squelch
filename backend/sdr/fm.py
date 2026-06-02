@@ -88,13 +88,18 @@ class _SpectralSubtractor:
     """
     Single-channel online spectral noise reduction using overlap-add STFT.
 
-    Noise floor:
+    Noise floor — three complementary estimators:
       MinStat — per-bin minimum power over a _MINSTAT_FRAMES circular buffer,
                 updated every STFT frame.  Primary estimator; works even on
                 stations with no silence pauses.
       EMA     — updated only during AGC-detected silence; converges faster
                 on stations that have pauses; used as a refinement.
-    Estimate = min(MinStat, EMA) when both are available.
+      Physics — derived from the discriminator's 65-90 kHz noise-floor RMS,
+                which is a clean physical measurement immune to musical-content
+                contamination of the MinStat buffer.  Self-calibrated during
+                silence frames.  Acts as a floor: noise_est never drops below
+                what the discriminator says the noise actually is.
+    Estimate = max(min(MinStat, EMA), physics_floor).
 
     Gain model: Ephraim-Malah (1984) decision-directed Wiener filter.
       γ[k]  = power / noise_est           (a posteriori SNR)
@@ -144,6 +149,16 @@ class _SpectralSubtractor:
         self._prev_gain  = np.ones(_n_bins, dtype=np.float64)
         self._prev_gamma = np.ones(_n_bins, dtype=np.float64)
 
+        # Physics-based noise floor state.
+        # _phys_scale converts noise_rms² (discriminator 65-90 kHz measurement)
+        # to per-STFT-bin power units at the Wiener input.  Analytically ≈ 307
+        # (PSD × 15 kHz effective bandwidth × 512 STFT integration); refined in
+        # place during silence frames via a very slow EMA so any pipeline gain
+        # drift is absorbed automatically.
+        self._fm_bins    = int(15_000 * n_fft / 48_000)   # 320 bins for n_fft=1024
+        self._phys_scale = 307.0
+        self._phys_alpha = 0.005   # τ ≈ 200 silence frames before scale is reliable
+
         # Subtraction mask: flat 1.0 across 0-15 kHz (FM audio bandwidth),
         # linear taper to 0 at 16 kHz.  Bins above the FM bandwidth have no
         # programme content; forcing gain=1 there avoids erratic Wiener
@@ -156,7 +171,8 @@ class _SpectralSubtractor:
         self._out_q = np.empty(0, dtype=np.float32)
         self._ola   = np.zeros(n_fft,    dtype=np.float64)
 
-    def process(self, x: np.ndarray, update_noise: bool) -> np.ndarray:
+    def process(self, x: np.ndarray, update_noise: bool,
+                noise_rms: float = 0.0) -> np.ndarray:
         N = len(x)
         self._in_q = np.concatenate([self._in_q, x.astype(np.float32)])
 
@@ -193,6 +209,19 @@ class _SpectralSubtractor:
                 noise_est = np.minimum(min_psd, self._noise_psd)
             else:
                 noise_est = min_psd
+
+            # Physics floor — from the discriminator's 65-90 kHz noise-floor
+            # measurement.  During dense music the MinStat minimum can be
+            # contaminated by programme content that occupies the bin in every
+            # frame of the 1.4-second buffer; the physics measurement is immune
+            # to that.  Calibrate the noise_rms² → per-bin-power scale factor
+            # during silence frames; apply it as a floor at all other times.
+            if noise_rms > 0.0:
+                if update_noise:
+                    _mean_pwr        = float(power[:self._fm_bins].mean())
+                    _target_scale    = _mean_pwr / (noise_rms ** 2 + 1e-30)
+                    self._phys_scale += self._phys_alpha * (_target_scale - self._phys_scale)
+                noise_est = np.maximum(noise_est, noise_rms ** 2 * self._phys_scale)
 
             # Ephraim-Malah decision-directed Wiener gain.
             # γ = a posteriori SNR; ξ = a priori SNR tracked via the previous
@@ -486,8 +515,8 @@ class FmStereoDemodulator:
         r32       = r.astype(np.float32)
         rms_pre   = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
         in_noise  = rms_pre <= _AGC_GATE
-        l32       = self._ss_l.process(l32, in_noise)
-        r32       = self._ss_r.process(r32, in_noise)
+        l32       = self._ss_l.process(l32, in_noise, noise_rms)
+        r32       = self._ss_r.process(r32, in_noise, noise_rms)
 
         # 9b. De-emphasis (75 µs)
         l, self._de_l_zi = lfilter(self._de_b, self._de_a, l32, zi=self._de_l_zi)
