@@ -45,10 +45,17 @@ _STEREO_RESTORE_MAX  = 1.2    # max side-channel boost at blend=0; scales linear
 # every STFT frame (silence or not).  The per-bin minimum over that window
 # approximates the noise floor; _MINSTAT_BIAS compensates for the statistical
 # tendency of the minimum to underestimate the true noise floor.
-# 256 hops × 512 samples / 48 kHz ≈ 2.7 s of history — long enough to see the
+# 128 hops × 512 samples / 48 kHz ≈ 1.4 s of history — long enough to see the
 # noise floor between notes/words, short enough to track slowly drifting SNR.
-_MINSTAT_FRAMES = 256
-_MINSTAT_BIAS   = 1.25
+#
+# The np.min(axis=0) scan is a cache-unfriendly column-wise reduction over a
+# row-major array; doing it every STFT frame (~94 Hz, 2 channels) adds
+# measurable overhead on a Pi 4 and causes USB callback overflows.
+# _MINSTAT_UPDATE_EVERY gates the scan to every N frames (~12 Hz); the noise
+# floor changes on timescales of seconds so 12 Hz is more than sufficient.
+_MINSTAT_FRAMES       = 128
+_MINSTAT_BIAS         = 1.25
+_MINSTAT_UPDATE_EVERY = 8
 
 # ITU-R BS.1770-4 K-weighting filter — two cascaded biquads, pre-computed for 48 kHz.
 # Stage 1: head-acoustics pre-filter (high-shelf boost above ~1 kHz).
@@ -118,10 +125,14 @@ class _SpectralSubtractor:
 
         # MinStat circular buffer: shape (_MINSTAT_FRAMES, n_bins).
         # Initialised to inf so that np.min over unfilled slots never beats real data.
-        _n_bins           = n_fft // 2 + 1
-        self._ms_buf      = np.full((_MINSTAT_FRAMES, _n_bins), np.inf, dtype=np.float64)
-        self._ms_idx      = 0    # next write slot (wraps)
-        self._ms_fill     = 0    # number of valid frames written (capped at _MINSTAT_FRAMES)
+        _n_bins              = n_fft // 2 + 1
+        self._ms_buf         = np.full((_MINSTAT_FRAMES, _n_bins), np.inf, dtype=np.float64)
+        self._ms_idx         = 0    # next write slot (wraps)
+        self._ms_fill        = 0    # number of valid frames written (capped at _MINSTAT_FRAMES)
+        # Cached min result; recomputed every _MINSTAT_UPDATE_EVERY frames.
+        # Initialise to _MINSTAT_UPDATE_EVERY-1 so the first frame triggers a recompute.
+        self._ms_frame_ctr   = _MINSTAT_UPDATE_EVERY - 1
+        self._ms_min_cache   = np.zeros(_n_bins, dtype=np.float64)
 
         # Frequency-dependent subtraction mask.
         # Extends to 6 kHz (previously 4 kHz): the 4-6 kHz band ("presence/clarity")
@@ -150,7 +161,12 @@ class _SpectralSubtractor:
             self._ms_buf[self._ms_idx] = power
             self._ms_idx  = (self._ms_idx + 1) % _MINSTAT_FRAMES
             self._ms_fill = min(self._ms_fill + 1, _MINSTAT_FRAMES)
-            min_psd = np.min(self._ms_buf[:self._ms_fill], axis=0) * _MINSTAT_BIAS
+            # Gate the expensive axis=0 scan to every _MINSTAT_UPDATE_EVERY frames.
+            self._ms_frame_ctr = (self._ms_frame_ctr + 1) % _MINSTAT_UPDATE_EVERY
+            if self._ms_frame_ctr == 0:
+                self._ms_min_cache = (np.min(self._ms_buf[:self._ms_fill], axis=0)
+                                      * _MINSTAT_BIAS)
+            min_psd = self._ms_min_cache
 
             # EMA update during silence — fast-convergence helper; non-critical
             # now that MinStat provides a continuous estimate.
@@ -184,11 +200,11 @@ class _SpectralSubtractor:
             g_s[1:-1] = 0.25 * gain[:-2] + 0.5 * gain[1:-1] + 0.25 * gain[2:]
             X_out     = X * g_s
 
-            frame_out       = np.fft.irfft(X_out, n=self._n_fft) * self._win
-            self._ola      += frame_out
-            ready           = self._ola[:self._hop].copy()
-            self._ola       = np.roll(self._ola, -self._hop)
-            self._ola[-self._hop:] = 0.0
+            frame_out                          = np.fft.irfft(X_out, n=self._n_fft) * self._win
+            self._ola                         += frame_out
+            ready                              = self._ola[:self._hop].copy()
+            self._ola[:self._n_fft-self._hop]  = self._ola[self._hop:]
+            self._ola[self._n_fft-self._hop:]  = 0.0
             self._out_q     = np.concatenate([self._out_q,
                                                ready.astype(np.float32)])
             self._in_q      = self._in_q[self._hop:]
