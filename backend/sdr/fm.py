@@ -56,6 +56,13 @@ _MINSTAT_FRAMES       = 128
 _MINSTAT_BIAS         = 1.66  # geometric mean of 1.25 and 2.0; Martin (2001) recommends 1.5-2.0
 _MINSTAT_UPDATE_EVERY = 8
 
+# Physics-based noise floor scale.
+# Analytical: noise_rms²/25000 Hz (PSD) × 15000 Hz (LPF BW) × 512 (N/2) = 307.
+# Empirical pipeline measurement: 200–250.  Using 200 (65% of analytical) keeps
+# the floor conservatively below the true per-bin noise so the Wiener cannot
+# over-subtract.  Slightly under-estimating is safe; over-estimating is not.
+_PHYS_SCALE = 200.0
+
 # ITU-R BS.1770-4 K-weighting filter — two cascaded biquads, pre-computed for 48 kHz.
 # Stage 1: head-acoustics pre-filter (high-shelf boost above ~1 kHz).
 # Stage 2: RLB weighting (second-order highpass, de-weights LF where ears are less sensitive).
@@ -156,7 +163,8 @@ class _SpectralSubtractor:
         self._out_q = np.empty(0, dtype=np.float32)
         self._ola   = np.zeros(n_fft,    dtype=np.float64)
 
-    def process(self, x: np.ndarray, update_noise: bool) -> np.ndarray:
+    def process(self, x: np.ndarray, update_noise: bool,
+                noise_rms_smooth: float = 0.0) -> np.ndarray:
         N = len(x)
         self._in_q = np.concatenate([self._in_q, x.astype(np.float32)])
 
@@ -193,6 +201,13 @@ class _SpectralSubtractor:
                 noise_est = np.minimum(min_psd, self._noise_psd)
             else:
                 noise_est = min_psd
+
+            # Physics floor — lower bound from the discriminator noise measurement.
+            # Corrects MinStat when programme content contaminates its buffer.
+            # noise_rms_smooth is smoothed at block level (not STFT) so it is
+            # immune to hop-overlap contamination.  0.0 default is a no-op.
+            if noise_rms_smooth > 0.0:
+                noise_est = np.maximum(noise_est, noise_rms_smooth ** 2 * _PHYS_SCALE)
 
             # Ephraim-Malah decision-directed Wiener gain.
             # γ = a posteriori SNR; ξ = a priori SNR tracked via the previous
@@ -321,6 +336,10 @@ class FmStereoDemodulator:
         self._blend_smooth = 0.0
         self._blend_init   = False   # True after first process() call
 
+        # --- physics noise floor state ---
+        self._noise_rms_smooth = 0.0    # block-level EMA of discriminator noise_rms
+        self._noise_rms_init   = False  # snaps on first block; same pattern as _blend_init
+
         # --- audio AGC state ---
         # Fast warmup for the first 20 blocks (~2 s) so the audio snaps to
         # target level immediately after tuning, then hands off to the slow
@@ -433,6 +452,15 @@ class FmStereoDemodulator:
         noise_band, self._noise_zi = sosfilt(self._noise_sos, composite, zi=self._noise_zi)
         noise_rms = float(np.sqrt(np.mean(noise_band ** 2)))
         self.last_noise_rms = noise_rms
+
+        # Smooth noise_rms at block level — immune to STFT window contamination.
+        # Snap on first block so the physics floor is valid from block 1 with no
+        # warmup transient.  alpha=0.05 → τ ≈ 2 s (≈ 18 blocks at 109 ms/block).
+        if not self._noise_rms_init:
+            self._noise_rms_smooth = noise_rms
+            self._noise_rms_init   = True
+        else:
+            self._noise_rms_smooth += 0.05 * (noise_rms - self._noise_rms_smooth)
         noise_gate = float(np.clip(
             1.0 - (noise_rms / (pilot_rms + 1e-6)) / _NOISE_RATIO_SCALE,
             0.0, 1.0,
@@ -492,8 +520,8 @@ class FmStereoDemodulator:
         r32       = r.astype(np.float32)
         rms_pre   = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
         in_noise  = rms_pre <= _AGC_GATE
-        l32       = self._ss_l.process(l32, in_noise)
-        r32       = self._ss_r.process(r32, in_noise)
+        l32       = self._ss_l.process(l32, in_noise, self._noise_rms_smooth)
+        r32       = self._ss_r.process(r32, in_noise, self._noise_rms_smooth)
 
         # 9b. De-emphasis (75 µs)
         l, self._de_l_zi = lfilter(self._de_b, self._de_a, l32, zi=self._de_l_zi)
