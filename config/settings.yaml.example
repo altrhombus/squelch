@@ -36,6 +36,57 @@ icecast:
   source_password: "changeme"
   mount: "/radio"
 
+# ---------------------------------------------------------------------------
+# Optional post-processing for weak FM signals
+# ---------------------------------------------------------------------------
+# All effects gate to zero when blend >= signal_threshold (clean stations
+# are completely unaffected).  Bypass can be toggled at runtime in the UI
+# for A/B comparison without retuning.
+post_processing:
+  # Master switch — false = entire block is zero-cost bypass
+  enabled: false
+
+  # Engage only when stereo blend is below this threshold.
+  # 1.0 = always apply regardless of signal quality
+  # 0.7 = only engage when blend drops below 70% (marginal/weak signals)
+  signal_threshold: 1.0
+
+  # M/S side-channel NR: attenuates HF (>6 kHz) noise in the Side channel.
+  # The Side path (L-R subcarrier) is noisier than Mid; this reduces
+  # top-octave hiss without touching mono (Mid) content.
+  ms_processing:
+    enabled: true
+    side_nr_strength: 0.3   # 0.0 = off, 1.0 = full HF Side attenuation
+
+  # Multiband compressor (3 bands: low/mid/high).
+  # Corrects spectral imbalance introduced by the Wiener filter.
+  multiband_compress:
+    enabled: true
+    ratio: 1.8              # compression ratio (1.0 = off)
+    attack_ms: 20           # block-level attack time (ms)
+    release_ms: 200         # block-level release time (ms)
+    threshold_db: -18       # compression threshold (dBFS)
+
+  # Harmonic exciter: synthesises 2nd/3rd harmonics in 3–8 kHz from Mid,
+  # restoring perceived HF air stripped by de-emphasis + Wiener attenuation.
+  exciter:
+    enabled: false
+    mix_db: -18             # harmonic blend level (dB below source, -24 subtle, -12 noticeable)
+    freq_low: 3000          # exciter band low edge (Hz)
+    freq_high: 8000         # exciter band high edge (Hz)
+
+  # Comfort noise: adds a low-level shaped noise floor to mask Wiener gain
+  # transitions that appear as a "grainy" quality on weak-signal pauses.
+  comfort_noise:
+    enabled: true
+    level_dbfs: -78         # noise floor level (-84 = barely perceptible, -70 = noticeable)
+
+  # Warmth EQ: subtle tonal correction — low-shelf body and presence softening.
+  warmth_eq:
+    enabled: false
+    low_shelf_db: 1.5       # boost at 200 Hz (0 = off)
+    presence_db: -1.0       # notch at 3.5 kHz (0 = off)
+
 # Default station presets loaded on first run (can be edited in the UI)
 default_presets:
   - name: "Example FM"

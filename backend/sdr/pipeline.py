@@ -76,11 +76,12 @@ class RadioPipeline:
     # Public API
     # ------------------------------------------------------------------
 
-    async def start(self, freq_hz: float, band: str, gain="auto", deemphasis_us: int = 75, stereo_mode: str = "auto"):
+    async def start(self, freq_hz: float, band: str, gain="auto", deemphasis_us: int = 75,
+                    stereo_mode: str = "auto", post_processing: dict = None):
         await self.stop()
         self._band = band
         self._freq = freq_hz
-        self._demod = self._make_demod(band, freq_hz, deemphasis_us, stereo_mode)
+        self._demod = self._make_demod(band, freq_hz, deemphasis_us, stereo_mode, post_processing)
 
         if band == "fm":
             self._rds = RdsDecoder(self._on_rds)
@@ -257,6 +258,12 @@ class RadioPipeline:
                         self._rds.feed(composite)
                     except Exception as e:
                         logger.warning("RDS error: %s", e)
+                pp = getattr(self._demod, "last_pp_state", None)
+                if pp is not None:
+                    loop = self._loop
+                    if loop and not loop.is_closed():
+                        loop.call_soon_threadsafe(
+                            self._meta.update_post_processing, pp.to_dict())
                 return encoder.encode(l, r)
 
             elif self._band in ("am", "scanner"):
@@ -290,9 +297,11 @@ class RadioPipeline:
             return 0.3
         return 0.0
 
-    def _make_demod(self, band: str, freq_hz: float, deemphasis_us: int, stereo_mode: str = "auto"):
+    def _make_demod(self, band: str, freq_hz: float, deemphasis_us: int,
+                    stereo_mode: str = "auto", post_processing: dict = None):
         if band == "fm":
-            return FmStereoDemodulator(deemphasis_us=deemphasis_us, stereo_mode=stereo_mode)
+            return FmStereoDemodulator(deemphasis_us=deemphasis_us, stereo_mode=stereo_mode,
+                                       post_processing=post_processing)
         elif band == "scanner" and _AVIATION_LO <= freq_hz <= _AVIATION_HI:
             return AmDemodulator()
         elif band == "scanner":

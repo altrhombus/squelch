@@ -60,6 +60,44 @@
       </div><!-- #now-playing-content -->
     </header>
 
+    <!-- Post-processing meter panel (collapsible, FM only) -->
+    <div id="pp-panel" class="hidden">
+      <div id="pp-header" role="button" tabindex="0" aria-expanded="false"
+           aria-controls="pp-body" title="Post-processing status">
+        <span id="pp-header-label">ENHANCED</span>
+        <button id="btn-pp-bypass" class="btn-small" aria-pressed="false"
+                title="Bypass all post-processing for A/B comparison">Bypass</button>
+        <span id="pp-chevron" aria-hidden="true">&#9660;</span>
+      </div>
+      <div id="pp-body" class="hidden" role="region" aria-label="Post-processing details">
+        <div class="pp-row">
+          <span class="pp-label">Signal</span>
+          <div class="pp-bar-wrap"><div id="pp-bar-signal" class="pp-bar"></div></div>
+          <span id="pp-val-signal" class="pp-val">—</span>
+        </div>
+        <div class="pp-row">
+          <span class="pp-label">M/S NR</span>
+          <div class="pp-bar-wrap"><div id="pp-bar-ms" class="pp-bar"></div></div>
+          <span id="pp-val-ms" class="pp-val">—</span>
+        </div>
+        <div class="pp-row">
+          <span class="pp-label">Compress</span>
+          <div class="pp-bar-wrap"><div id="pp-bar-comp" class="pp-bar"></div></div>
+          <span id="pp-val-comp" class="pp-val">—</span>
+        </div>
+        <div class="pp-row">
+          <span class="pp-label">Exciter</span>
+          <div class="pp-bar-wrap"><div id="pp-bar-exc" class="pp-bar"></div></div>
+          <span id="pp-val-exc" class="pp-val">—</span>
+        </div>
+        <div class="pp-row">
+          <span class="pp-label">Comfort</span>
+          <div class="pp-bar-wrap"><div id="pp-bar-cn" class="pp-bar"></div></div>
+          <span id="pp-val-cn" class="pp-val">—</span>
+        </div>
+      </div>
+    </div>
+
     <!-- History (left column, below hero) -->
     <section id="history-section">
       <h2>History</h2>

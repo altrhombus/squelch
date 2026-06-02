@@ -828,6 +828,88 @@ h2 {
 }
 
 /* =====================================================
+   Post-processing meter panel
+   ===================================================== */
+
+#pp-panel {
+  background: var(--surface);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+#pp-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  transition: color 0.3s;
+}
+#pp-header:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#pp-header.pp-active  { color: #e09020; }
+#pp-header.pp-bypassed { color: #555; }
+
+#pp-header-label { flex: 1; }
+#pp-chevron { font-size: 10px; color: var(--muted); }
+
+#btn-pp-bypass {
+  font-size: 10px;
+  padding: 2px 8px;
+  margin-left: auto;
+}
+
+#pp-body {
+  padding: 0 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pp-row {
+  display: grid;
+  grid-template-columns: 68px 1fr 56px;
+  align-items: center;
+  gap: 8px;
+}
+
+.pp-label {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pp-bar-wrap {
+  height: 5px;
+  background: var(--bar-off);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.pp-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: 3px;
+  transition: width 0.5s ease, background-color 0.4s ease;
+  background: var(--accent);
+}
+.pp-bar.good     { background: #4caf50; }
+.pp-bar.fair     { background: #e09020; }
+.pp-bar.weak     { background: #e04040; }
+.pp-bar.inactive { background: var(--bar-off); }
+
+.pp-val {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* =====================================================
    Light mode
    ===================================================== */
 

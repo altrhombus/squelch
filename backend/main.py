@@ -184,6 +184,17 @@ async def set_squelch(body: dict):
     return {"slider": slider}
 
 
+class PpBypassRequest(BaseModel):
+    bypass: bool
+
+
+@app.post("/post-processing/bypass")
+async def pp_bypass(req: PpBypassRequest):
+    """Toggle post-processing bypass for A/B comparison (no retune required)."""
+    radio.set_pp_bypass(req.bypass)
+    return {"bypass": req.bypass}
+
+
 @app.get("/stream/url")
 async def stream_url():
     return {"stream_url": "/stream", "content_type": "audio/aac"}

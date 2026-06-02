@@ -35,9 +35,10 @@ class RadioManager:
         self._streams  = streaming
 
         sdr_cfg = config.get("sdr", {})
-        self._device_index = sdr_cfg.get("device_index", 0)
-        self._ppm          = sdr_cfg.get("ppm_correction", 0)
-        self._deemphasis   = sdr_cfg.get("deemphasis_us", 75)
+        self._device_index    = sdr_cfg.get("device_index", 0)
+        self._ppm             = sdr_cfg.get("ppm_correction", 0)
+        self._deemphasis      = sdr_cfg.get("deemphasis_us", 75)
+        self._pp_cfg          = config.get("post_processing", {})
 
         self._pipeline: Optional[object]      = None   # RadioPipeline
         self._nrsc5:    Optional[Nrsc5Backend] = None
@@ -113,10 +114,16 @@ class RadioManager:
     # Internal
     # ------------------------------------------------------------------
 
+    def set_pp_bypass(self, bypass: bool):
+        """Toggle post-processing bypass at runtime for A/B comparison."""
+        if self._pipeline and self._pipeline._demod is not None:
+            self._pipeline._demod.pp_bypass = bypass
+
     async def _start_pipeline(self, freq_hz: float, band: str, gain, deemph: int, stereo_mode: str = "auto"):
         from ..sdr.pipeline import RadioPipeline
         self._pipeline = RadioPipeline(self._cfg, self._meta, self._streams)
-        await self._pipeline.start(freq_hz, band, gain=gain, deemphasis_us=deemph, stereo_mode=stereo_mode)
+        await self._pipeline.start(freq_hz, band, gain=gain, deemphasis_us=deemph,
+                                   stereo_mode=stereo_mode, post_processing=self._pp_cfg)
 
     async def _start_hd(self, freq_hz: float):
         encoder = AacEncoder(stereo=True)

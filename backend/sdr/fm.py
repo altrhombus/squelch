@@ -84,6 +84,335 @@ _K_WEIGHT_SOS = np.array([
      1.0,              -1.99004745483398,  0.99007225036498],   # stage 2
 ], dtype=np.float64)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Audio EQ Cookbook (RBJ) biquad designers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _rbj_low_shelf(freq: float, gain_db: float, q: float = 0.707) -> np.ndarray:
+    """Low-shelf biquad (RBJ cookbook).  Returns one SOS row (shape 1×6)."""
+    A   = 10.0 ** (gain_db / 40.0)
+    w0  = 2.0 * np.pi * freq / _AUDIO_RATE
+    c, s = np.cos(w0), np.sin(w0)
+    al  = s / (2.0 * q)
+    sqA = np.sqrt(A)
+    b0  = A * ((A+1) - (A-1)*c + 2*sqA*al)
+    b1  = 2*A * ((A-1) - (A+1)*c)
+    b2  = A * ((A+1) - (A-1)*c - 2*sqA*al)
+    a0  = (A+1) + (A-1)*c + 2*sqA*al
+    a1  = -2.0 * ((A-1) + (A+1)*c)
+    a2  = (A+1) + (A-1)*c - 2*sqA*al
+    return np.array([[b0/a0, b1/a0, b2/a0, 1.0, a1/a0, a2/a0]])
+
+
+def _rbj_peaking(freq: float, gain_db: float, q: float = 2.0) -> np.ndarray:
+    """Peaking EQ biquad (RBJ cookbook).  Returns one SOS row (shape 1×6)."""
+    A   = 10.0 ** (gain_db / 40.0)
+    w0  = 2.0 * np.pi * freq / _AUDIO_RATE
+    c   = np.cos(w0)
+    al  = np.sin(w0) / (2.0 * q)
+    b0  = 1.0 + al * A;  b1 = -2.0 * c;  b2 = 1.0 - al * A
+    a0  = 1.0 + al / A;  a1 = -2.0 * c;  a2 = 1.0 - al / A
+    return np.array([[b0/a0, b1/a0, b2/a0, 1.0, a1/a0, a2/a0]])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Post-processing state — carried to the websocket for real-time metering
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PostProcessingState:
+    __slots__ = ('enabled', 'bypass', 'signal_pct',
+                 'ms_active', 'compress_active', 'compress_gr_db',
+                 'exciter_active', 'comfort_noise_active', 'warmth_eq_active')
+
+    def __init__(self):
+        self.enabled              = False
+        self.bypass               = False
+        self.signal_pct           = 100
+        self.ms_active            = False
+        self.compress_active      = False
+        self.compress_gr_db       = 0.0
+        self.exciter_active       = False
+        self.comfort_noise_active = False
+        self.warmth_eq_active     = False
+
+    def to_dict(self) -> dict:
+        return {
+            "enabled":    self.enabled,
+            "bypass":     self.bypass,
+            "signal_pct": self.signal_pct,
+            "modules": {
+                "ms":            {"active": self.ms_active},
+                "compress":      {"active": self.compress_active,
+                                  "gr_db": round(self.compress_gr_db, 1)},
+                "exciter":       {"active": self.exciter_active},
+                "comfort_noise": {"active": self.comfort_noise_active},
+                "warmth_eq":     {"active": self.warmth_eq_active},
+            },
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Post-processing DSP modules
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _MsNrProcessor:
+    """
+    Attenuates the HF (>6 kHz) portion of the Side channel proportional to
+    strength × eff.  Side comes from the noisy L-R subcarrier path so its
+    top octave has worse SNR than Mid.  At eff=0 (strong/clean signal) the
+    processor is an exact pass-through.
+    """
+
+    def __init__(self, strength: float = 0.3):
+        self._strength = float(strength)
+        self._hp_sos   = butter(2, 6_000, 'highpass', fs=_AUDIO_RATE, output='sos')
+        self._hp_zi    = _zero_zi(self._hp_sos)
+
+    def process(self, l32: np.ndarray, r32: np.ndarray,
+                eff: float) -> tuple:
+        if eff < 1e-3:
+            return l32, r32
+        m = (l32.astype(np.float64) + r32.astype(np.float64)) * 0.5
+        s = (l32.astype(np.float64) - r32.astype(np.float64)) * 0.5
+        s_hf, self._hp_zi = sosfilt(self._hp_sos, s, zi=self._hp_zi)
+        s_clean = s - s_hf * (eff * self._strength)
+        return (m + s_clean).astype(np.float32), (m - s_clean).astype(np.float32)
+
+
+class _MultibandCompressor:
+    """
+    Three-band (LR4) compressor: low ≤250 Hz, mid 250–4000 Hz, high ≥4000 Hz.
+    Per-block envelope tracking with asymmetric attack/release.  Corrects
+    spectral imbalance from the Wiener filter — bands with more noise get
+    attenuated more, leaving the output spectrally uneven without this stage.
+    last_gr_db: average gain in dB across all 6 band-channel combinations
+    (0 dB = no compression, negative = gain reduction).
+    """
+
+    def __init__(self, ratio: float = 1.8, attack_ms: float = 20.0,
+                 release_ms: float = 200.0, threshold_db: float = -18.0):
+        self._ratio     = float(ratio)
+        self._threshold = 10.0 ** (threshold_db / 20.0)
+        bps = _AUDIO_RATE / 5243.0              # approximate blocks per second
+        self._atk = 1.0 - np.exp(-1.0 / max(1.0, attack_ms  * 1e-3 * bps))
+        self._rel = 1.0 - np.exp(-1.0 / max(1.0, release_ms * 1e-3 * bps))
+        self._lp1 = butter(4,    250, 'lowpass',  fs=_AUDIO_RATE, output='sos')
+        self._hp1 = butter(4,    250, 'highpass', fs=_AUDIO_RATE, output='sos')
+        self._lp2 = butter(4, 4_000, 'lowpass',  fs=_AUDIO_RATE, output='sos')
+        self._hp2 = butter(4, 4_000, 'highpass', fs=_AUDIO_RATE, output='sos')
+        self._lp1_zi = [_zero_zi(self._lp1), _zero_zi(self._lp1)]
+        self._hp1_zi = [_zero_zi(self._hp1), _zero_zi(self._hp1)]
+        self._lp2_zi = [_zero_zi(self._lp2), _zero_zi(self._lp2)]
+        self._hp2_zi = [_zero_zi(self._hp2), _zero_zi(self._hp2)]
+        self._env     = np.full((2, 3), self._threshold, dtype=np.float64)
+        self.last_gr_db = 0.0
+
+    def process(self, l32: np.ndarray, r32: np.ndarray,
+                eff: float) -> tuple:
+        if eff < 1e-3:
+            self.last_gr_db = 0.0
+            return l32, r32
+        outputs  = []
+        gain_sum = 0.0
+        for ch, x32 in enumerate([l32, r32]):
+            x   = x32.astype(np.float64)
+            low, self._lp1_zi[ch] = sosfilt(self._lp1, x,  zi=self._lp1_zi[ch])
+            mh,  self._hp1_zi[ch] = sosfilt(self._hp1, x,  zi=self._hp1_zi[ch])
+            mid, self._lp2_zi[ch] = sosfilt(self._lp2, mh, zi=self._lp2_zi[ch])
+            hi,  self._hp2_zi[ch] = sosfilt(self._hp2, mh, zi=self._hp2_zi[ch])
+            out = np.zeros_like(x)
+            for i, band in enumerate([low, mid, hi]):
+                rms   = float(np.sqrt(np.mean(band ** 2))) + 1e-10
+                alpha = self._atk if rms > self._env[ch, i] else self._rel
+                self._env[ch, i] += alpha * (rms - self._env[ch, i])
+                env = float(self._env[ch, i])
+                if env > self._threshold:
+                    g = ((self._threshold / env)
+                         * (env / self._threshold) ** (1.0 / self._ratio))
+                else:
+                    g = 1.0
+                g = 1.0 - eff * (1.0 - g)   # fade effect in with eff
+                out      += band * g
+                gain_sum += g
+            outputs.append(out.astype(np.float32))
+        self.last_gr_db = float(20.0 * np.log10(max(gain_sum / 6.0, 1e-6)))
+        return outputs[0], outputs[1]
+
+
+class _WarmthEQ:
+    """
+    Tonal correction: low-shelf boost at 200 Hz (body) and a peaking cut at
+    3.5 kHz (softens the nasal artefact that Wiener + de-emphasis can leave).
+    The processed signal is wet/dry blended by eff so the correction fades in
+    with signal weakness — strong stations see no change at all.
+    """
+
+    def __init__(self, low_shelf_db: float = 1.5, presence_db: float = -1.0):
+        stages = []
+        if abs(low_shelf_db) > 0.01:
+            stages.append(_rbj_low_shelf(200.0, low_shelf_db))
+        if abs(presence_db) > 0.01:
+            stages.append(_rbj_peaking(3_500.0, presence_db))
+        if stages:
+            self._sos    = np.vstack(stages)
+            self._zi_l   = _zero_zi(self._sos)
+            self._zi_r   = _zero_zi(self._sos)
+            self._active = True
+        else:
+            self._sos = self._zi_l = self._zi_r = None
+            self._active = False
+
+    def process(self, l32: np.ndarray, r32: np.ndarray,
+                eff: float) -> tuple:
+        if not self._active or eff < 1e-3:
+            return l32, r32
+        l_eq, self._zi_l = sosfilt(self._sos, l32.astype(np.float64), zi=self._zi_l)
+        r_eq, self._zi_r = sosfilt(self._sos, r32.astype(np.float64), zi=self._zi_r)
+        l_out = (l32 * (1.0 - eff) + l_eq * eff).astype(np.float32)
+        r_out = (r32 * (1.0 - eff) + r_eq * eff).astype(np.float32)
+        return l_out, r_out
+
+
+class _HarmonicExciter:
+    """
+    Aphex-style exciter: extracts 3–8 kHz from Mid, applies tanh saturation to
+    synthesise 2nd/3rd harmonics, mixes only the harmonic residual (excited −
+    original) back into Mid at mix_db.  Restores perceived HF air stripped by
+    de-emphasis + Wiener attenuation.  Side channel is untouched so Side-path
+    noise is not widened.
+    """
+
+    def __init__(self, mix_db: float = -18.0, freq_low: int = 3_000,
+                 freq_high: int = 8_000):
+        self._mix    = 10.0 ** (mix_db / 20.0)
+        self._bp_sos = butter(4, [freq_low, freq_high], 'bandpass',
+                              fs=_AUDIO_RATE, output='sos')
+        self._bp_zi  = _zero_zi(self._bp_sos)
+
+    def process(self, l32: np.ndarray, r32: np.ndarray,
+                eff: float) -> tuple:
+        if eff < 1e-3:
+            return l32, r32
+        l = l32.astype(np.float64)
+        r = r32.astype(np.float64)
+        m = (l + r) * 0.5
+        s = (l - r) * 0.5
+        band, self._bp_zi = sosfilt(self._bp_sos, m, zi=self._bp_zi)
+        drive     = 3.0
+        harmonics = (np.tanh(band * drive) / drive - band) * self._mix * eff
+        m_out     = m + harmonics
+        return (m_out + s).astype(np.float32), (m_out - s).astype(np.float32)
+
+
+class _PostProcessor:
+    """
+    Coordinator for all optional post-demod enhancements.
+
+    process()    — M/S NR, multiband compress, warmth EQ  (before width restore)
+    pre_limit()  — harmonic exciter                        (after AGC, before limiter)
+    post_limit() — comfort noise injection                 (after limiter)
+
+    All effects are gated by eff = f(blend, signal_threshold): eff=0 when
+    blend ≥ threshold so strong clean stations are mathematically unaffected.
+    bypass can be toggled at runtime (thread-safe bool assignment under the GIL)
+    for A/B comparison without retuning.
+    """
+
+    def __init__(self, cfg: dict):
+        self._enabled   = bool(cfg.get("enabled", False))
+        self._threshold = float(cfg.get("signal_threshold", 1.0))
+        self.bypass     = False
+        self._state     = PostProcessingState()
+        self._state.enabled = self._enabled
+
+        ms_cfg  = cfg.get("ms_processing",     {})
+        cmp_cfg = cfg.get("multiband_compress", {})
+        exc_cfg = cfg.get("exciter",            {})
+        cn_cfg  = cfg.get("comfort_noise",      {})
+        eq_cfg  = cfg.get("warmth_eq",          {})
+
+        self._ms  = (_MsNrProcessor(ms_cfg.get("side_nr_strength", 0.3))
+                     if ms_cfg.get("enabled", True) else None)
+        self._cmp = (_MultibandCompressor(
+                         ratio        = cmp_cfg.get("ratio",        1.8),
+                         attack_ms    = cmp_cfg.get("attack_ms",    20.0),
+                         release_ms   = cmp_cfg.get("release_ms",   200.0),
+                         threshold_db = cmp_cfg.get("threshold_db", -18.0),
+                     ) if cmp_cfg.get("enabled", True) else None)
+        self._exc = (_HarmonicExciter(
+                         mix_db    = exc_cfg.get("mix_db",    -18.0),
+                         freq_low  = exc_cfg.get("freq_low",  3_000),
+                         freq_high = exc_cfg.get("freq_high", 8_000),
+                     ) if exc_cfg.get("enabled", False) else None)
+        self._eq  = (_WarmthEQ(
+                         low_shelf_db = eq_cfg.get("low_shelf_db", 1.5),
+                         presence_db  = eq_cfg.get("presence_db",  -1.0),
+                     ) if eq_cfg.get("enabled", False) else None)
+
+        self._cn_enabled = bool(cn_cfg.get("enabled", True))
+        self._cn_level   = 10.0 ** (cn_cfg.get("level_dbfs", -78.0) / 20.0)
+        if self._cn_enabled:
+            self._cn_sos = butter(2, 80, 'highpass', fs=_AUDIO_RATE, output='sos')
+            self._cn_zi  = _zero_zi(self._cn_sos)
+        else:
+            self._cn_sos = self._cn_zi = None
+        self._rng = np.random.default_rng()
+
+    def _eff(self, blend: float) -> float:
+        if blend >= self._threshold:
+            return 0.0
+        return min(1.0, (self._threshold - blend) / max(self._threshold, 1e-6))
+
+    def process(self, l32: np.ndarray, r32: np.ndarray, blend: float) -> tuple:
+        self._state.signal_pct        = int(round(blend * 100))
+        self._state.bypass            = self.bypass
+        self._state.ms_active         = False
+        self._state.compress_active   = False
+        self._state.compress_gr_db    = 0.0
+        self._state.warmth_eq_active  = False
+        if not self._enabled or self.bypass:
+            return l32, r32
+        eff = self._eff(blend)
+        if self._ms is not None:
+            l32, r32 = self._ms.process(l32, r32, eff)
+            self._state.ms_active = eff > 0.01
+        if self._cmp is not None:
+            l32, r32 = self._cmp.process(l32, r32, eff)
+            self._state.compress_active = eff > 0.01
+            self._state.compress_gr_db  = self._cmp.last_gr_db
+        if self._eq is not None:
+            l32, r32 = self._eq.process(l32, r32, eff)
+            self._state.warmth_eq_active = eff > 0.01
+        return l32, r32
+
+    def pre_limit(self, l32: np.ndarray, r32: np.ndarray, blend: float) -> tuple:
+        self._state.exciter_active = False
+        if not self._enabled or self.bypass or self._exc is None:
+            return l32, r32
+        eff = self._eff(blend)
+        if eff < 1e-3:
+            return l32, r32
+        self._state.exciter_active = True
+        return self._exc.process(l32, r32, eff)
+
+    def post_limit(self, l32: np.ndarray, r32: np.ndarray, blend: float) -> tuple:
+        self._state.comfort_noise_active = False
+        if not self._enabled or self.bypass or not self._cn_enabled:
+            return l32, r32
+        n      = len(l32)
+        white  = self._rng.standard_normal(n).astype(np.float64)
+        noise, self._cn_zi = sosfilt(self._cn_sos, white, zi=self._cn_zi)
+        rms_n  = float(np.sqrt(np.mean(noise ** 2))) + 1e-10
+        level  = self._cn_level * (1.0 + 0.5 * (1.0 - min(blend, 1.0)))
+        noise  = (noise * (level / rms_n)).astype(np.float32)
+        self._state.comfort_noise_active = True
+        return (l32 + noise).astype(np.float32), (r32 + noise).astype(np.float32)
+
+    @property
+    def state(self) -> PostProcessingState:
+        return self._state
+
+
 def _soft_limit(x: np.ndarray) -> np.ndarray:
     """
     Soft-knee limiter: linear below the knee, tanh rolloff above.
@@ -282,8 +611,10 @@ class FmStereoDemodulator:
     last_noise_rms:    float = 0.0   # discriminator noise floor (65-90 kHz band)
     last_blend:        float = 0.0   # stereo blend factor 0-1
     last_audio_rms:    float = 0.0   # decoded output level
+    last_pp_state      = None        # PostProcessingState or None
 
-    def __init__(self, deemphasis_us: int = 75, stereo_mode: str = "auto"):
+    def __init__(self, deemphasis_us: int = 75, stereo_mode: str = "auto",
+                 post_processing: dict = None):
         # --- audio bandpass/lowpass filter coefficients (SOS) ---
         # Single L+R path at full 15 kHz FM bandwidth.  A blended narrow path
         # (8 kHz) was previously used to reduce HF hiss on weak signals; the
@@ -371,6 +702,12 @@ class FmStereoDemodulator:
         self._kw_l_zi      = _zero_zi(_K_WEIGHT_SOS)
         self._kw_r_zi      = _zero_zi(_K_WEIGHT_SOS)
         self._rms_k_smooth = 0.12   # smoothed K-weighted RMS; init at target level
+
+        # --- optional post-processing ---
+        self._pp = None
+        self.pp_bypass: bool = False   # runtime A/B bypass (thread-safe bool under GIL)
+        if post_processing and post_processing.get("enabled", False):
+            self._pp = _PostProcessor(post_processing)
 
     def process(self, iq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -543,6 +880,13 @@ class FmStereoDemodulator:
         l32 = l.astype(np.float32)
         r32 = r.astype(np.float32)
 
+        # Post-processing: M/S side-NR, multiband compressor, warmth EQ.
+        # Runs before stereo width restoration so the width restorer sees
+        # the already-spectrally-balanced signal.
+        if self._pp is not None:
+            self._pp.bypass = self.pp_bypass
+            l32, r32 = self._pp.process(l32, r32, blend)
+
         # 10b. Signal level measurement for the AGC gate below.
         #      Broadband RMS is used (not K-weighted) because the K-weighting
         #      HF boost would make hiss appear louder and prevent the gate firing.
@@ -596,8 +940,21 @@ class FmStereoDemodulator:
                 alpha_agc = 0.3 if target_gain < self._agc_gain else 0.005
             self._agc_gain += alpha_agc * (target_gain - self._agc_gain)
             self._agc_gain = float(np.clip(self._agc_gain, 0.1, 10.0))
-        l32 = _soft_limit((l32 * self._agc_gain).astype(np.float64)).astype(np.float32)
-        r32 = _soft_limit((r32 * self._agc_gain).astype(np.float64)).astype(np.float32)
+        l_agc = (l32 * self._agc_gain).astype(np.float64)
+        r_agc = (r32 * self._agc_gain).astype(np.float64)
+        # Harmonic exciter runs after AGC scaling (calibrated level) so the
+        # synthesised harmonics are at a predictable relative level, and
+        # before the soft limiter so any resulting peaks are caught cleanly.
+        if self._pp is not None:
+            _el, _er = self._pp.pre_limit(
+                l_agc.astype(np.float32), r_agc.astype(np.float32), blend)
+            l_agc, r_agc = _el.astype(np.float64), _er.astype(np.float64)
+        l32 = _soft_limit(l_agc).astype(np.float32)
+        r32 = _soft_limit(r_agc).astype(np.float32)
+        # Comfort noise — post-limiter so it is never clipped.
+        if self._pp is not None:
+            l32, r32 = self._pp.post_limit(l32, r32, blend)
+            self.last_pp_state = self._pp.state
 
         self.last_audio_rms = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2))
         return l32, r32, composite.astype(np.float32)

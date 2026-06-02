@@ -352,6 +352,9 @@ function applyMeta(m) {
 
   // Diagnostics panel (elements may not exist in HTML — null-safe)
   if (m.diag) applyDiag(m.diag, m.band);
+
+  // Post-processing meter panel
+  applyPpState(m.post_processing, m.band);
 }
 
 function updateArtLink(m) {
@@ -373,6 +376,107 @@ function updateArtLink(m) {
 function toggleEl(el, show) {
   el.classList.toggle("hidden", !show);
 }
+
+// ---------------------------------------------------------------------------
+// Post-processing meter panel
+// ---------------------------------------------------------------------------
+
+let _ppBypass = false;
+
+function applyPpState(pp, band) {
+  const panel = document.getElementById("pp-panel");
+  if (!panel) return;
+
+  // Only show for FM band when post-processing is enabled
+  if (!pp || !pp.enabled || band !== "fm") {
+    panel.classList.add("hidden");
+    return;
+  }
+
+  const bypassed   = pp.bypass || _ppBypass;
+  const signalPct  = pp.signal_pct ?? 100;
+  const mods       = pp.modules || {};
+  const anyActive  = !bypassed && Object.values(mods).some(m => m.active);
+
+  panel.classList.remove("hidden");
+
+  // Header color: amber when actively enhancing, dimmed when bypassed or clean signal
+  const header = document.getElementById("pp-header");
+  if (header) {
+    header.classList.toggle("pp-active",  anyActive);
+    header.classList.toggle("pp-bypassed", bypassed);
+  }
+
+  const label = document.getElementById("pp-header-label");
+  if (label) label.textContent = bypassed ? "BYPASSED" : "ENHANCED";
+
+  const bypassBtn = document.getElementById("btn-pp-bypass");
+  if (bypassBtn) {
+    bypassBtn.textContent = bypassed ? "Resume" : "Bypass";
+    bypassBtn.setAttribute("aria-pressed", String(bypassed));
+  }
+
+  // Signal bar
+  _setPpBar("signal", signalPct, 100,
+    v => v > 80 ? "good" : v > 40 ? "fair" : "weak",
+    v => v + "%");
+
+  // Module rows
+  const ms = mods.ms || {};
+  _setPpModuleRow("ms", ms.active && !bypassed, "active", "off");
+
+  const comp = mods.compress || {};
+  _setPpModuleRow("comp", comp.active && !bypassed, "active",
+    "off", comp.gr_db != null ? comp.gr_db.toFixed(1) + " dB" : null);
+
+  const exc = mods.exciter || {};
+  _setPpModuleRow("exc", exc.active && !bypassed, "active", "off");
+
+  const cn = mods.comfort_noise || {};
+  _setPpModuleRow("cn", cn.active && !bypassed, "active", "off");
+}
+
+function _setPpBar(id, value, maxVal, colorFn, labelFn) {
+  const bar = document.getElementById(`pp-bar-${id}`);
+  const val = document.getElementById(`pp-val-${id}`);
+  if (!bar || !val) return;
+  const pct = Math.min(100, Math.max(0, (value / maxVal) * 100));
+  bar.style.width = pct + "%";
+  bar.className   = "pp-bar " + colorFn(value);
+  val.textContent = labelFn(value);
+}
+
+function _setPpModuleRow(id, active, activeLabel, offLabel, extraLabel) {
+  const bar = document.getElementById(`pp-bar-${id}`);
+  const val = document.getElementById(`pp-val-${id}`);
+  if (!bar || !val) return;
+  bar.style.width = active ? "100%" : "0%";
+  bar.className   = "pp-bar " + (active ? "good" : "inactive");
+  val.textContent = active ? (extraLabel || activeLabel) : offLabel;
+}
+
+// Collapse/expand panel body
+document.getElementById("pp-header")?.addEventListener("click", _togglePpPanel);
+document.getElementById("pp-header")?.addEventListener("keydown", e => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); _togglePpPanel(); }
+});
+
+function _togglePpPanel() {
+  const body    = document.getElementById("pp-body");
+  const header  = document.getElementById("pp-header");
+  const chevron = document.getElementById("pp-chevron");
+  if (!body) return;
+  const open = !body.classList.contains("hidden");
+  body.classList.toggle("hidden", open);
+  header?.setAttribute("aria-expanded", String(!open));
+  if (chevron) chevron.innerHTML = open ? "&#9660;" : "&#9650;";
+}
+
+document.getElementById("btn-pp-bypass")?.addEventListener("click", async (e) => {
+  e.stopPropagation();   // don't trigger panel expand
+  _ppBypass = !_ppBypass;
+  await api("POST", "/post-processing/bypass", { bypass: _ppBypass });
+});
 
 // ---------------------------------------------------------------------------
 // Diagnostics panel (null-safe — elements may be absent from HTML)
