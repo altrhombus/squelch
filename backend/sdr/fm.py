@@ -40,6 +40,16 @@ _LIMITER_KNEE        = 0.85    # soft-knee starts here; converges to ±1.0 above
 _SHELF_MAX_DEPTH     = 0.292   # (1 − 10^(−3/20)): blend fraction → -3 dB HF at noise_gate=0
 _STEREO_RESTORE_MAX  = 1.2    # max side-channel boost at blend=0; scales linearly with (1-blend)
 
+# Minimum Statistics noise floor estimation.
+# A circular buffer of _MINSTAT_FRAMES per-bin power spectra is maintained across
+# every STFT frame (silence or not).  The per-bin minimum over that window
+# approximates the noise floor; _MINSTAT_BIAS compensates for the statistical
+# tendency of the minimum to underestimate the true noise floor.
+# 256 hops × 512 samples / 48 kHz ≈ 2.7 s of history — long enough to see the
+# noise floor between notes/words, short enough to track slowly drifting SNR.
+_MINSTAT_FRAMES = 256
+_MINSTAT_BIAS   = 1.25
+
 # ITU-R BS.1770-4 K-weighting filter — two cascaded biquads, pre-computed for 48 kHz.
 # Stage 1: head-acoustics pre-filter (high-shelf boost above ~1 kHz).
 # Stage 2: RLB weighting (second-order highpass, de-weights LF where ears are less sensitive).
@@ -72,11 +82,20 @@ class _SpectralSubtractor:
     """
     Single-channel online spectral noise subtraction using overlap-add STFT.
 
-    When update_noise=True (silence / hiss detected by the AGC gate), the
-    per-bin noise power spectral density is estimated with an EMA.  During
-    music (update_noise=False) the stored estimate is subtracted from each
-    FFT bin while preserving phase, with a hard spectral floor at floor_frac
-    of the input amplitude to prevent musical-noise chirping artefacts.
+    Noise floor is estimated by two complementary methods:
+      MinStat  — per-bin minimum power over a _MINSTAT_FRAMES circular buffer,
+                 updated every STFT frame regardless of programme content.
+                 Provides a continuous noise floor estimate even on stations
+                 with no silence pauses.
+      EMA      — exponential moving average of per-bin power, updated only
+                 when update_noise=True (AGC-detected silence).  Converges
+                 faster than MinStat on stations that have pauses; used as a
+                 refinement when available.
+    The noise estimate used is min(MinStat, EMA) when both are available,
+    so we always take the more conservative (lower) estimate.
+
+    Gain is computed per-bin and smoothed with a 3-bin triangular window
+    before application to eliminate "musical noise" artefacts.
 
     Uses sqrt-Hann analysis and synthesis windows; at 50 % overlap these
     satisfy the COLA constraint so unprocessed frames reconstruct exactly.
@@ -85,7 +104,7 @@ class _SpectralSubtractor:
     """
 
     def __init__(self, n_fft: int = 1024, hop: int = 512,
-                 over_sub: float = 0.6, floor_frac: float = 0.2,
+                 over_sub: float = 0.45, floor_frac: float = 0.2,
                  noise_alpha: float = 0.9):
         self._n_fft       = n_fft
         self._hop         = hop
@@ -97,13 +116,21 @@ class _SpectralSubtractor:
         self._noise_psd   = np.zeros(n_fft // 2 + 1, dtype=np.float64)
         self._noise_ready = False
 
-        # Frequency-dependent subtraction mask: full below 2 kHz, linear taper
-        # to zero at 4 kHz, nothing above.  FM hiss and sibilants ('s', 'sh',
-        # 'f') both occupy 4-8 kHz; subtracting there shreds the sibilant's
-        # spectral envelope and produces a "staticy" crackling on speech.
-        # Lower-midrange hiss (0-3 kHz) is reduced without touching fricatives.
-        _freqs            = np.arange(n_fft // 2 + 1) * (48_000.0 / n_fft)
-        self._sub_mask    = np.clip((4_000.0 - _freqs) / 2_000.0,
+        # MinStat circular buffer: shape (_MINSTAT_FRAMES, n_bins).
+        # Initialised to inf so that np.min over unfilled slots never beats real data.
+        _n_bins           = n_fft // 2 + 1
+        self._ms_buf      = np.full((_MINSTAT_FRAMES, _n_bins), np.inf, dtype=np.float64)
+        self._ms_idx      = 0    # next write slot (wraps)
+        self._ms_fill     = 0    # number of valid frames written (capped at _MINSTAT_FRAMES)
+
+        # Frequency-dependent subtraction mask.
+        # Extends to 6 kHz (previously 4 kHz): the 4-6 kHz band ("presence/clarity")
+        # carries vowel formants and vocal presence, and is the dominant noise band
+        # on weak FM signals.  At 4 kHz the effective subtraction is
+        # over_sub × 0.5 = 0.225 — conservative enough not to disturb sibilant
+        # envelopes.  Above 6 kHz (where 's', 'sh' peak) the mask is zero.
+        _freqs            = np.arange(_n_bins) * (48_000.0 / n_fft)
+        self._sub_mask    = np.clip((6_000.0 - _freqs) / 4_000.0,
                                     0.0, 1.0).astype(np.float64)
 
         self._in_q  = np.empty(0, dtype=np.float32)
@@ -119,6 +146,14 @@ class _SpectralSubtractor:
             X     = np.fft.rfft(frame)
             power = X.real ** 2 + X.imag ** 2
 
+            # MinStat update — every frame, silence or not.
+            self._ms_buf[self._ms_idx] = power
+            self._ms_idx  = (self._ms_idx + 1) % _MINSTAT_FRAMES
+            self._ms_fill = min(self._ms_fill + 1, _MINSTAT_FRAMES)
+            min_psd = np.min(self._ms_buf[:self._ms_fill], axis=0) * _MINSTAT_BIAS
+
+            # EMA update during silence — fast-convergence helper; non-critical
+            # now that MinStat provides a continuous estimate.
             if update_noise:
                 if not self._noise_ready:
                     self._noise_psd   = power.copy()
@@ -126,15 +161,28 @@ class _SpectralSubtractor:
                 else:
                     self._noise_psd = (self._noise_alpha * self._noise_psd
                                        + (1.0 - self._noise_alpha) * power)
-                X_out = X                     # pass through while estimating
-            elif self._noise_ready:
-                floor_p = (self._floor_frac ** 2) * power
-                clean_p = np.maximum(
-                    power - self._over_sub * self._noise_psd * self._sub_mask,
-                    floor_p)
-                X_out   = X * np.sqrt(clean_p / (power + 1e-30))
+
+            # Primary noise estimate: MinStat minimum.  When the EMA has seen at
+            # least one silence frame its estimate is tighter (it tracks gaps in
+            # the programme); take the lower of the two so we never over-subtract.
+            if self._noise_ready:
+                noise_est = np.minimum(min_psd, self._noise_psd)
             else:
-                X_out = X                     # no estimate yet, pass through
+                noise_est = min_psd
+
+            floor_p = (self._floor_frac ** 2) * power
+            clean_p = np.maximum(
+                power - self._over_sub * noise_est * self._sub_mask,
+                floor_p)
+
+            # Spectral gain smoothing: 3-bin triangular average across frequency.
+            # Prevents isolated bins from passing through at full amplitude while
+            # their neighbours are attenuated — the "musical noise" chirp/bubble
+            # artefact that spectral subtraction is notorious for.
+            gain      = np.sqrt(clean_p / (power + 1e-30))
+            g_s       = gain.copy()
+            g_s[1:-1] = 0.25 * gain[:-2] + 0.5 * gain[1:-1] + 0.25 * gain[2:]
+            X_out     = X * g_s
 
             frame_out       = np.fft.irfft(X_out, n=self._n_fft) * self._win
             self._ola      += frame_out
