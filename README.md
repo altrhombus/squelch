@@ -167,6 +167,48 @@ All FM DSP runs in Python (numpy/scipy) — no GNU Radio required. The pipeline 
 
 ---
 
+## DSP tuning reference
+
+All constants below are in `backend/sdr/fm.py` (module-level) or `backend/sdr/pipeline.py` unless noted. Changes take effect on service restart.
+
+### Wiener filter noise reduction
+
+| Constant | Default | Effect | When to adjust |
+|---|---|---|---|
+| `_MINSTAT_BIAS` | `1.66` | Scales the MinStat minimum before it becomes the noise floor estimate. Higher → more aggressive subtraction. | Raise toward `2.0` if residual hiss is still audible on weak stations. Lower toward `1.25` if musical-noise artefacts appear on strong stations. |
+| `_PHYS_SCALE` | `200.0` | Converts discriminator noise RMS² to per-STFT-bin power for the physics floor. Analytical value is 307; 200 is conservative. | Raise toward `250` if the floor seems too weak on very noisy stations. Lower toward `150` if over-subtraction artefacts appear. |
+| `_MINSTAT_FRAMES` | `128` | Length of MinStat circular buffer (128 × 10.7 ms ≈ 1.4 s of history). | Don't raise above `256` — the axis=0 min scan cost was the source of USB callback overflows at 256. Lower reduces memory but makes the estimate noisier. |
+| `alpha_dd` | `0.92` | Decision-directed Wiener smoother time constant (τ ≈ 250 ms). Lower = faster gain response. | Lower toward `0.88` if the Wiener sounds sluggish on transients. Don't go below `0.88` — sibilant offset artefacts appear (tested). |
+
+### Stereo blend
+
+| Constant | Default | Effect | When to adjust |
+|---|---|---|---|
+| `_NOISE_RATIO_SCALE` | `1.5` | noise_rms / pilot_rms ratio at which the noise gate fully closes (blend → 0). | Raise if strong stations are blending to mono too eagerly. Lower if weak stations have audible stereo hiss. |
+| `_STEREO_RESTORE_MAX` | `1.2` | Maximum midrange (300–3500 Hz) L-R boost applied when blend is low. | Lower toward `0.8` if the stereo width restoration sounds unnatural on marginal signals. |
+| `deemphasis_us` | `75` | De-emphasis time constant. **75 µs for USA/Canada, 50 µs for Europe/Australia/Japan.** Set in `config/settings.yaml`. | Must match your broadcast region or the audio will sound too bright (wrong value) or dull. |
+
+### AGC
+
+| Constant / value | Default | Effect | When to adjust |
+|---|---|---|---|
+| `target_gain = 0.12 / rms_k_smooth` | target RMS ≈ 0.12 | K-weighted output level target. Hardcoded in `FmStereoDemodulator.process()`. | Edit the `0.12` literal if output is consistently too quiet or too loud across all stations. |
+| `_LIMITER_KNEE` | `0.85` | Amplitude above which the soft-knee limiter engages. | Raise toward `0.95` for more headroom before limiting. Lower toward `0.75` for a more compressed sound. |
+
+### Software gain control (RTL-SDR hardware gain)
+
+These are in `backend/sdr/pipeline.py`.
+
+| Constant | Default | Effect | When to adjust |
+|---|---|---|---|
+| `_FM_GAIN_START` | `30.0 dB` | Starting gain after tune. | Lower to `20–25 dB` if you have an external LNA that already provides sufficient gain. |
+| `_IQ_RMS_LO` | `0.07` | IQ RMS floor — gain steps up when below this. | Raise slightly if the controller keeps stepping up gain unnecessarily on a marginal signal. |
+| `_IQ_RMS_HI` | `0.38` | IQ RMS ceiling — gain steps down when above this (ADC saturation risk). | Lower if you hear clipping on very strong local stations. |
+| `_NOISE_RATIO_MAX` | `2.0` | noise_rms / pilot_rms above which the controller steps gain down for SNR quality. | Lower toward `1.5` if the controller doesn't back off gain on noisy marginal stations. |
+| `_GAIN_HOLD_BLOCKS` | `50` | Minimum blocks (~5.5 s) between gain steps. | Raise if gain is hunting (stepping up and down frequently). |
+
+---
+
 ## Tech stack
 
 | Layer | What |
