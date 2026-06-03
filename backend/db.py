@@ -18,7 +18,7 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 frequency REAL NOT NULL,
-                band TEXT NOT NULL CHECK(band IN ('fm', 'am', 'scanner', 'hd')),
+                band TEXT NOT NULL CHECK(band IN ('fm', 'am', 'scanner', 'hd', 'wx')),
                 gain TEXT DEFAULT 'auto',
                 bandwidth TEXT DEFAULT 'wide',
                 stereo_mode TEXT DEFAULT 'auto',
@@ -63,4 +63,27 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Migrate presets table to include 'wx' band if it was created before this change.
+        # SQLite doesn't support ALTER TABLE ... ADD CONSTRAINT, so we recreate the table.
+        async with db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='presets'"
+        ) as cur:
+            row = await cur.fetchone()
+        if row and "'wx'" not in row["sql"]:
+            await db.execute("ALTER TABLE presets RENAME TO _presets_old")
+            await db.execute("""
+                CREATE TABLE presets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    frequency REAL NOT NULL,
+                    band TEXT NOT NULL CHECK(band IN ('fm', 'am', 'scanner', 'hd', 'wx')),
+                    gain TEXT DEFAULT 'auto',
+                    bandwidth TEXT DEFAULT 'wide',
+                    stereo_mode TEXT DEFAULT 'auto',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("INSERT INTO presets SELECT * FROM _presets_old")
+            await db.execute("DROP TABLE _presets_old")
+
         await db.commit()

@@ -84,11 +84,13 @@ class Recorder:
         db = await get_db()
         try:
             cur = await db.execute(
-                """INSERT INTO recordings (filename, station_name, artist, title, frequency, band)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO recordings
+                       (filename, station_name, artist, title, frequency, band, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (os.path.basename(out_file), self._meta.station_name,
                  self._meta.artist, self._meta.title,
-                 self._meta.frequency, self._meta.band),
+                 self._meta.frequency, self._meta.band,
+                 self._rec_start.isoformat()),
             )
             await db.commit()
             self._rec_id = cur.lastrowid
@@ -97,7 +99,11 @@ class Recorder:
 
         self._rec_task = asyncio.create_task(self._write_loop())
         logger.info("Recording to: %s", out_file)
-        return {"status": "recording", "file": os.path.basename(out_file)}
+        return {
+            "status": "recording",
+            "file": os.path.basename(out_file),
+            "started_at": self._rec_start.timestamp(),
+        }
 
     async def stop(self) -> dict:
         if not self._rec_task or self._rec_task.done():

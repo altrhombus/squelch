@@ -66,6 +66,9 @@ class RadioManager:
         gain         = kwargs.get("gain", self._cfg.get("sdr", {}).get("gain", "auto"))
         deemph       = kwargs.get("deemphasis_us", self._deemphasis)
         stereo_mode  = kwargs.get("stereo_mode", "auto")
+        # hd_channel is 1-based from the frontend; convert to 0-based for nrsc5
+        hd_channel_1 = int(kwargs.get("hd_channel", 1))
+        hd_program   = max(0, hd_channel_1 - 1)
 
         self._meta.update_tune(freq_hz, band)
         await self._meta.broadcast()
@@ -77,7 +80,7 @@ class RadioManager:
         self._current_band = band
 
         if band == "hd":
-            await self._start_hd(freq_hz)
+            await self._start_hd(freq_hz, program=hd_program)
         else:
             await self._start_pipeline(freq_hz, band, gain, deemph, stereo_mode)
 
@@ -128,7 +131,9 @@ class RadioManager:
         self._pipeline = RadioPipeline(self._cfg, self._meta, self._streams)
         await self._pipeline.start(freq_hz, band, gain=gain, deemphasis_us=deemph, stereo_mode=stereo_mode)
 
-    async def _start_hd(self, freq_hz: float):
+    async def _start_hd(self, freq_hz: float, program: int = 0):
+        # Record which channel we're on (1-based) before nrsc5 starts producing output
+        self._meta.hd_channel = program + 1
         encoder = AacEncoder(stereo=True)
         _live       = [False]   # mutable flag for the pcm_cb closure
         _in_total   = [0]       # total input samples consumed — keeps output grid continuous
@@ -187,7 +192,7 @@ class RadioManager:
             metadata_callback=meta_cb,
             pcm_callback=pcm_cb,
         )
-        await self._nrsc5.start(freq_hz)
+        await self._nrsc5.start(freq_hz, program=program)
 
     async def _stop_all(self):
         if self._pipeline:

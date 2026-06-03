@@ -34,8 +34,9 @@ _RE_TITLE   = re.compile(r"Title: (.+)")
 _RE_ARTIST  = re.compile(r"Artist: (.+)")
 _RE_PTY     = re.compile(r"Program type: (.+)")
 _RE_LOT     = re.compile(r"LOT file: (.+\.jpg|.+\.png)", re.IGNORECASE)
-_RE_LOCKED  = re.compile(r"Synchronized")
-_RE_LOST    = re.compile(r"Lost synchronization")
+_RE_LOCKED       = re.compile(r"Synchronized")
+_RE_LOST         = re.compile(r"Lost synchronization")
+_RE_PROGRAM_AVAIL = re.compile(r"Audio program (\d+):")
 
 
 class Nrsc5Backend:
@@ -61,9 +62,11 @@ class Nrsc5Backend:
         self._art_dir         = tempfile.mkdtemp(prefix="squelch-art-")
         self._pcm_r_fd:       Optional[int] = None
         self._pcm_w_fd:       Optional[int] = None
+        self._available_programs: set = set()   # 0-based program numbers seen in output
 
     async def start(self, freq_hz: float, program: int = 0):
         await self.stop()
+        self._available_programs = set()
 
         # Anonymous pipe: nrsc5 writes PCM to w_fd, Python reads from r_fd
         self._pcm_r_fd, self._pcm_w_fd = os.pipe()
@@ -181,6 +184,10 @@ class Nrsc5Backend:
                 update["art_path"] = art
         if _RE_LOCKED.search(line): update["hd_locked"] = True
         if _RE_LOST.search(line):   update["hd_locked"] = False
+        if m := _RE_PROGRAM_AVAIL.search(line):
+            self._available_programs.add(int(m.group(1)))
+            # Broadcast as 1-based channel numbers (HD1, HD2, …)
+            update["hd_channels_available"] = sorted(p + 1 for p in self._available_programs)
         if update:
             self._metadata_cb(update)
 

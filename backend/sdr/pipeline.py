@@ -138,8 +138,8 @@ class RadioPipeline:
         sdr = RtlSdr()
         self._sdr = sdr
 
-        sr = _FM_SR if band in ("fm", "hd") else _AM_SR
-        block = _BLOCK if band in ("fm", "hd") else _AM_BLOCK
+        sr = _FM_SR if band in ("fm", "hd", "wx") else _AM_SR
+        block = _BLOCK if band in ("fm", "hd", "wx") else _AM_BLOCK
 
         sdr.sample_rate = sr
         sdr.center_freq = freq_hz
@@ -154,7 +154,7 @@ class RadioPipeline:
         # and typically lands at 40-49 dB, which degrades FM SNR compared
         # to the ~30 dB noise-figure optimum.  We start near 30 dB and
         # step only to keep the IQ RMS inside the safe operating range.
-        if band == "fm" and gain == "auto":
+        if band in ("fm", "wx") and gain == "auto":
             # rtlsdr_get_tuner_gains() returns tenths-of-dB (e.g. 297 = 29.7 dB).
             # pyrtlsdr exposes these raw values via gain_values; divide by 10 so
             # our search and sdr.gain setter (which expects dB) both work correctly.
@@ -180,7 +180,7 @@ class RadioPipeline:
         self._loop = loop   # saved for use in the executor-thread _on_rds callback
 
         from ..streaming import AacEncoder
-        encoder = AacEncoder(stereo=(band in ("fm", "hd")))
+        encoder = AacEncoder(stereo=(band in ("fm", "hd", "wx")))
 
         first_chunk = True
         hold_blocks = 0   # blocks since last gain step
@@ -253,7 +253,7 @@ class RadioPipeline:
     def _process(self, iq: np.ndarray, encoder) -> Optional[bytes]:
         """Runs in executor thread: demodulate → encode → return AAC bytes."""
         try:
-            if self._band == "fm":
+            if self._band in ("fm", "wx"):
                 # Cheap IQ RMS check before the full DSP chain.  When squelched
                 # we skip everything (resample, filters, Hilbert, spectral sub,
                 # AGC) and return silence directly.  last_iq_rms is updated so
@@ -306,7 +306,7 @@ class RadioPipeline:
         return 0.0
 
     def _make_demod(self, band: str, freq_hz: float, deemphasis_us: int, stereo_mode: str = "auto"):
-        if band == "fm":
+        if band in ("fm", "wx"):
             return FmStereoDemodulator(deemphasis_us=deemphasis_us, stereo_mode=stereo_mode,
                                        ss_executor=self._ss_executor)
         elif band == "scanner" and _AVIATION_LO <= freq_hz <= _AVIATION_HI:

@@ -150,19 +150,21 @@ class TuneRequest(BaseModel):
     gain:        Optional[str] = None
     bandwidth:   Optional[str] = None
     stereo_mode: Optional[str] = None
+    hd_channel:  Optional[int] = None   # 1-based HD sub-channel (HD1=1, HD2=2, …)
 
 
 @app.post("/tune")
 async def tune(req: TuneRequest):
     band = req.band.lower()
-    if band not in ("fm", "am", "scanner", "hd"):
-        raise HTTPException(400, "band must be fm, am, scanner, or hd")
+    if band not in ("fm", "am", "scanner", "hd", "wx"):
+        raise HTTPException(400, "band must be fm, am, scanner, hd, or wx")
 
     freq_hz = req.frequency * 1e6 if band != "am" else req.frequency * 1e3
 
     kwargs: dict = {}
-    if req.gain        is not None: kwargs["gain"]      = req.gain
+    if req.gain        is not None: kwargs["gain"]       = req.gain
     if req.stereo_mode is not None: kwargs["stereo_mode"] = req.stereo_mode
+    if req.hd_channel  is not None: kwargs["hd_channel"] = req.hd_channel
 
     asyncio.create_task(radio.tune(freq_hz, band, **kwargs))
     return {"status": "tuning", "frequency": req.frequency, "band": band}
@@ -255,10 +257,13 @@ async def record_stop():
 
 @app.get("/record/status")
 async def record_status():
-    return {
+    result = {
         "recording": recorder.is_recording(),
         "file": recorder._recording_file and os.path.basename(recorder._recording_file),
     }
+    if recorder.is_recording() and recorder._rec_start is not None:
+        result["started_at"] = recorder._rec_start.timestamp()
+    return result
 
 
 @app.get("/recordings")

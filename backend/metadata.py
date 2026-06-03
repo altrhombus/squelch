@@ -26,6 +26,8 @@ class MetadataState:
         self.pi_code: Optional[str] = None
         self.signal_bars: int = 0          # 0–5
         self.hd_locked: bool = False
+        self.hd_channel: Optional[int] = None       # 1-based (1=HD1, 2=HD2, …)
+        self.hd_channels_available: list = []       # e.g. [1, 2, 3]
         self.stereo: bool = False
         self.has_art: bool = False
         self.art_version: int = 0
@@ -49,6 +51,8 @@ class MetadataState:
             "pi_code": self.pi_code,
             "signal_bars": self.signal_bars,
             "hd_locked": self.hd_locked,
+            "hd_channel": self.hd_channel,
+            "hd_channels_available": self.hd_channels_available,
             "stereo": self.stereo,
             "has_art": self.has_art,
             "art_version": self.art_version,
@@ -72,6 +76,8 @@ class MetadataState:
         self.pty = None
         self.pi_code = None
         self.hd_locked = False
+        self.hd_channel = None
+        self.hd_channels_available = []
         self.stereo = False
         self.has_art = False
         self.art_version = 0
@@ -129,6 +135,8 @@ class MetadataState:
         pty: str = None,
         art_path: str = None,
         hd_locked: bool = None,
+        hd_channel: Optional[int] = None,
+        hd_channels_available: Optional[list] = None,
     ):
         changed = False
         if station_name and station_name != self.station_name:
@@ -148,6 +156,12 @@ class MetadataState:
             changed = True
         if hd_locked is not None and hd_locked != self.hd_locked:
             self.hd_locked = hd_locked
+            changed = True
+        if hd_channel is not None and hd_channel != self.hd_channel:
+            self.hd_channel = hd_channel
+            changed = True
+        if hd_channels_available is not None and hd_channels_available != self.hd_channels_available:
+            self.hd_channels_available = hd_channels_available
             changed = True
         if art_path:
             try:
