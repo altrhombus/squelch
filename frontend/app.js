@@ -1561,9 +1561,26 @@ api("GET", "/record/status").then(s => {
   }
 });
 
-// Redraw freq strip on window resize
+// Redraw freq strip on window resize; restore column layout when leaving mobile.
+// initPanels() and activateTab() set inline style.display on columns for phone
+// panel switching — those inline styles win over CSS media queries, so when the
+// viewport grows back above 640px we must clear them or columns stay hidden.
 let _stripResizeTimer = null;
+let _prevWasPhone = window.innerWidth < 640;
+
 window.addEventListener("resize", () => {
+  const isPhone = window.innerWidth < 640;
+
+  if (_prevWasPhone && !isPhone) {
+    // Crossing phone → tablet/desktop: remove all inline display/animation styles
+    // set by the mobile panel switcher so CSS media queries take control again.
+    ["left-col", "center-col", "right-col"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.style.display = ""; el.style.opacity = ""; el.style.animation = ""; }
+    });
+  }
+
+  _prevWasPhone = isPhone;
   clearTimeout(_stripResizeTimer);
   _stripResizeTimer = setTimeout(drawFreqStrip, 150);
 });

@@ -1570,24 +1570,33 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
   /* Desktop band tabs live in toolbar — hide them in tuner panel */
   #band-tabs { display: none; }
 
-  /* Larger hero */
+  /* Larger hero — vertical layout at 1024px where the column is too narrow for
+     side-by-side art (260px art + metadata would leave < 30px for controls). */
   #now-playing { min-height: calc(100svh - var(--toolbar-h) - 60px); }
 
   #now-playing-content {
-    flex-direction: row;
-    align-items: flex-start;
-    gap: 28px;
-    padding: 32px 28px 28px;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    padding: 32px 28px 24px;
     min-height: calc(100svh - var(--toolbar-h) - 60px);
   }
 
   #art-wrap {
-    width: 260px;
-    height: 260px;
+    width: min(220px, 55%);
+    height: min(220px, 55%);
     flex-shrink: 0;
   }
 
-  #now-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+  #now-info {
+    flex: 1;
+    min-width: 0;
+    width: 100%;
+    min-height: 0; /* override the 180px from the 640px block */
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
   #station-name { font-size: clamp(22px, 2.2vw, 30px); }
 
   #freq-value { font-size: 48px; }
@@ -1598,6 +1607,31 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
   #history-list { max-height: 320px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--surface2) transparent; }
   #history-list::-webkit-scrollbar { width: 4px; }
   #history-list::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 2px; }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Wide desktop (1280px+) — hero switches to side-by-side layout.
+   At this width the now-playing column is ≥540px, giving the
+   metadata panel a comfortable ≥240px after a 260px art block.
+   ═══════════════════════════════════════════════════════════ */
+
+@media (min-width: 1280px) {
+  #now-playing-content {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 28px;
+    padding: 32px 28px 28px;
+  }
+  #art-wrap {
+    width: 260px;
+    height: 260px;
+    flex-shrink: 0;
+  }
+  #now-info {
+    width: auto;       /* reset the 100% from the narrow desktop block */
+    min-height: 260px; /* match art height so controls stay at bottom */
+  }
+  #station-name { font-size: clamp(22px, 2.2vw, 30px); }
 }
 
 /* ═══════════════════════════════════════════════════════════
