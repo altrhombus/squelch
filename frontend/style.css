@@ -680,24 +680,9 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
   touch-action: none;
 }
 
-#dial-wrap {
-  position: relative;
-  padding-bottom: 6px;
-}
-#dial { width: 100%; }
-
-#dial-ticks {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 2px;
-  pointer-events: none;
-  margin-top: 4px;
-}
-#dial-ticks span {
-  font-size: 9px;
-  color: var(--text-muted);
-  letter-spacing: -0.02em;
-}
+/* Dial range input kept in DOM so JS can read/set its value, but not shown —
+   the frequency strip canvas handles the visual drag-to-tune interaction. */
+#dial-wrap { display: none; }
 
 #freq-input-wrap {
   display: flex;
@@ -1094,7 +1079,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
 
 .diag-row {
   display: grid;
-  grid-template-columns: 1fr 80px auto;
+  grid-template-columns: 1fr 64px auto;
   align-items: center;
   gap: 8px;
 }
@@ -1600,18 +1585,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
 
   #freq-value { font-size: 48px; }
 
-  /* Diagnostics: 2-column meter grid on desktop */
-  .diag-body {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px 16px;
-  }
-  /* Copy button spans both columns */
-  #btn-copy-diag { grid-column: 1 / -1; }
-  /* Restore row display for individual rows */
-  .diag-row {
-    grid-template-columns: 1fr 60px auto;
-  }
+  /* Diagnostics stays single-column — tuner column is only 260px */
 
   /* History list max-height */
   #history-list { max-height: 320px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--surface2) transparent; }

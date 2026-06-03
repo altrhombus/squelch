@@ -875,54 +875,72 @@ function drawFreqStrip() {
 
   const r     = BAND_RANGES[currentBand];
   const range = r.max - r.min;
+  const cs    = getComputedStyle(document.documentElement);
 
   // Background
-  const cs = getComputedStyle(document.documentElement);
   ctx.fillStyle = cs.getPropertyValue("--surface2").trim() || "rgba(255,255,255,0.085)";
   if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(0, 0, W, H, 8); ctx.fill(); }
   else { ctx.fillRect(0, 0, W, H); }
 
-  // Tick marks + labels
-  const majorStep  = currentBand === "wx" ? 0.05 : (currentBand === "scanner" ? 50 : 1);
-  const textY = H * 0.40;
+  // Per-band tick config — minor ticks are visual reference without labels,
+  // major ticks are labeled.  Aim for ~4-6 major labels across the strip.
+  let minorStep, majorStep;
+  if      (currentBand === "wx")       { minorStep = 0.025; majorStep = 0.05; }
+  else if (currentBand === "am")       { minorStep = 100;   majorStep = 200;  }
+  else if (currentBand === "scanner")  { minorStep = 50;    majorStep = 200;  }
+  else                                 { minorStep = 1;     majorStep = 5;    } // FM / HD
 
-  ctx.fillStyle  = "rgba(160,160,168,0.6)";
-  ctx.font       = `${Math.max(8, H * 0.22)}px -apple-system, sans-serif`;
-  ctx.textAlign  = "center";
-  ctx.strokeStyle = "rgba(255,255,255,0.10)";
+  const eps = minorStep * 0.01;  // float tolerance for loop termination
+
+  // Minor ticks (short, no label)
+  ctx.strokeStyle = "rgba(255,255,255,0.12)";
   ctx.lineWidth   = 1;
+  for (let f = Math.ceil(r.min / minorStep) * minorStep; f <= r.max + eps; f += minorStep) {
+    if (Math.round(f / majorStep) * majorStep === Math.round(f * 1000) / 1000) continue; // skip major positions
+    const x = ((f - r.min) / range) * W;
+    ctx.beginPath();
+    ctx.moveTo(x, H * 0.68);
+    ctx.lineTo(x, H - 2);
+    ctx.stroke();
+  }
 
-  for (let f = Math.ceil(r.min / majorStep) * majorStep; f <= r.max + 0.0001; f += majorStep) {
+  // Major ticks + labels
+  const fontSize = Math.max(8, Math.min(11, H * 0.26));
+  ctx.font       = `${fontSize}px -apple-system, sans-serif`;
+  ctx.textAlign  = "center";
+  ctx.strokeStyle = "rgba(255,255,255,0.22)";
+  ctx.lineWidth   = 1;
+  ctx.fillStyle   = "rgba(160,160,168,0.75)";
+
+  for (let f = Math.ceil(r.min / majorStep) * majorStep; f <= r.max + eps; f += majorStep) {
     const x = ((f - r.min) / range) * W;
     ctx.beginPath();
     ctx.moveTo(x, H * 0.52);
     ctx.lineTo(x, H - 2);
     ctx.stroke();
-    ctx.fillText(formatFreq(f, currentBand), x, textY);
+    ctx.fillText(formatFreq(f, currentBand), x, H * 0.38);
   }
 
-  // Position marker
-  const markerX    = ((currentFreq - r.min) / range) * W;
+  // Position marker — vertical line with triangle indicator at bottom
+  const markerX     = ((currentFreq - r.min) / range) * W;
   const accentColor = cs.getPropertyValue("--accent-dynamic").trim() || "#e05c00";
 
-  // Glow line
-  ctx.globalAlpha = 0.65;
+  ctx.save();
   ctx.strokeStyle = accentColor;
-  ctx.lineWidth   = 1.5;
-  ctx.shadowBlur  = 6;
+  ctx.lineWidth   = 2;
+  ctx.globalAlpha = 0.8;
+  ctx.shadowBlur  = 8;
   ctx.shadowColor = accentColor;
   ctx.beginPath();
   ctx.moveTo(markerX, 0);
   ctx.lineTo(markerX, H);
   ctx.stroke();
-  ctx.shadowBlur = 0;
+  ctx.restore();
 
-  // Chevron
-  ctx.fillStyle   = accentColor;
-  ctx.globalAlpha = 1;
+  ctx.fillStyle = accentColor;
   ctx.beginPath();
   ctx.moveTo(markerX - 5, H);
-  ctx.lineTo(markerX,     H * 0.52);
+  ctx.lineTo(markerX,     H * 0.5);
   ctx.lineTo(markerX + 5, H);
   ctx.closePath();
   ctx.fill();
