@@ -214,6 +214,12 @@ class RadioManager:
                 bars, stereo = self._estimate_signal()
                 self._meta.update_signal(bars, stereo)
 
+                # Collect live DSP diagnostics from the pipeline (FM/WX only)
+                if self._pipeline:
+                    diag = self._pipeline.get_diag()
+                    if diag:
+                        self._meta.diag = diag
+
                 # Only push a WebSocket frame when user-visible state changed.
                 cur = (bars, stereo, self._meta.state)
                 if cur != _prev:

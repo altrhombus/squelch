@@ -29,6 +29,9 @@
   --bar-on:     var(--accent-dynamic);
   --record-off: rgba(255, 255, 255, 0.3);
   --record-on:  #ff3b30;
+  /* Opaque list-item bg — must cover the red swipe-bg, so cannot be transparent */
+  --item-bg:       #1c1c1e;
+  --item-bg-hover: #28282c;
 
   /* ── Surfaces / glass ────────────────────────────────── */
   --glass-bg:    rgba(11, 11, 13, 0.72);
@@ -534,6 +537,7 @@ html, body {
   align-items: center;
   gap: 8px;
   flex: 1;
+  min-width: 80px;
 }
 #volume-wrap svg { color: var(--text-muted); flex-shrink: 0; }
 
@@ -559,18 +563,26 @@ input[type="range"]::-webkit-slider-thumb {
 input[type="range"]::-webkit-slider-thumb:active { transform: scale(1.25); }
 input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); outline-offset: 4px; }
 
-/* Record button */
+/* Record button — fixed square so border-radius: 50% stays circular */
+#btn-record {
+  width: 40px;
+  height: 40px;
+  flex-direction: row;
+  flex-shrink: 0;
+}
 #btn-record svg { color: var(--record-off); transition: color var(--dur-mid); }
 #btn-record.active svg { color: var(--record-on); }
 
+/* Elapsed timer — sibling of #btn-record inside #player-controls */
 .rec-elapsed {
   font-size: 9px;
   font-variant-numeric: tabular-nums;
   color: var(--record-on);
   line-height: 1;
   font-weight: 600;
-  min-height: 10px;
+  white-space: nowrap;
 }
+.rec-elapsed:empty { display: none; }
 
 /* ═══════════════════════════════════════════════════════════
    Tuner section
@@ -844,14 +856,14 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
   display: flex;
   align-items: center;
   gap: 10px;
-  background: var(--surface2);
+  background: var(--item-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 11px 12px;
   cursor: pointer;
   transition: background var(--dur-fast), border-color var(--dur-fast);
 }
-.preset-item:hover { background: var(--surface3); border-color: var(--border2); }
+.preset-item:hover { background: var(--item-bg-hover); border-color: var(--border2); }
 .preset-item:focus-visible { outline: 2px solid var(--accent-dynamic); outline-offset: 2px; }
 
 .preset-freq {
@@ -877,7 +889,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
   display: flex;
   align-items: center;
   gap: 10px;
-  background: var(--surface2);
+  background: var(--item-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 11px 12px;
@@ -917,7 +929,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--surface2);
+  background: var(--item-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 11px 12px;
@@ -925,7 +937,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
   will-change: transform;
   transition: background var(--dur-fast);
 }
-.history-item:hover { background: var(--surface3); }
+.history-item:hover { background: var(--item-bg-hover); }
 
 .history-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 
@@ -1650,6 +1662,9 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
 
   /* Play button inside hero */
   #btn-play { background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.28); }
+
+  --item-bg:       #e8e8ed;
+  --item-bg-hover: #d8d8dc;
 
   .btn-small  { color: var(--text); }
   .band-tab   { color: var(--text-muted); }

@@ -29,6 +29,7 @@ class MetadataState:
         self.hd_channel: Optional[int] = None       # 1-based (1=HD1, 2=HD2, …)
         self.hd_channels_available: list = []       # e.g. [1, 2, 3]
         self.stereo: bool = False
+        self.diag: Optional[dict] = None            # live DSP diagnostics from the pipeline
         self.has_art: bool = False
         self.art_version: int = 0
         self.apple_music_url: Optional[str] = None
@@ -54,6 +55,7 @@ class MetadataState:
             "hd_channel": self.hd_channel,
             "hd_channels_available": self.hd_channels_available,
             "stereo": self.stereo,
+            "diag": self.diag,
             "has_art": self.has_art,
             "art_version": self.art_version,
             "art_url": "/art/current.jpg" if self.has_art else None,

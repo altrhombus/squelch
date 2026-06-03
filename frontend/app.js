@@ -114,6 +114,13 @@ function setBand(band) {
   const tunerSection = document.getElementById("tuner-section");
   if (tunerSection) tunerSection.dataset.band = band;
 
+  // Clear HD sub-channel selector when leaving HD band
+  const hdChDiv = document.getElementById("hd-channels");
+  if (hdChDiv && band !== "hd") {
+    hdChDiv.innerHTML = "";
+    hdChDiv.classList.add("hidden");
+  }
+
   // Update dial / freq-input constraints for FM/HD
   if (dial) {
     dial.min  = r.min;
@@ -135,12 +142,12 @@ function setBand(band) {
 function buildDialTicks(r) {
   if (!dialTicks) return;
   dialTicks.innerHTML = "";
-  for (let i = 0; i <= 4; i++) {
-    const v = r.min + ((r.max - r.min) * i / 4);
+  // Only show endpoints — frequency strip canvas provides the detailed visualization
+  [r.min, r.max].forEach(v => {
     const s = document.createElement("span");
-    s.textContent = formatFreq(v, currentBand);
+    s.textContent = formatFreq(v, currentBand) + " " + r.unit;
     dialTicks.appendChild(s);
-  }
+  });
 }
 
 function buildWxChannels() {
@@ -215,7 +222,7 @@ async function tune(freq, band, hd_channel) {
 }
 
 function _startStream() {
-  player.src   = "/stream";
+  player.src   = "/stream?" + Date.now();   // cache-bust forces a fresh connection each play
   player.muted = true;
   player.play()
     .then(() => {
@@ -548,9 +555,9 @@ function applyMeta(m) {
       hdChDiv.querySelectorAll(".hd-ch-btn").forEach(btn => {
         btn.addEventListener("click", () => tune(currentFreq, currentBand, +btn.dataset.ch));
       });
-      hdChDiv.hidden = false;
+      hdChDiv.classList.remove("hidden");
     } else {
-      hdChDiv.hidden = true;
+      hdChDiv.classList.add("hidden");
     }
   }
 
@@ -1036,10 +1043,16 @@ async function loadPresets() {
         loadPresets();
       } else {
         btn.dataset.confirming = "1";
-        btn.textContent = "Sure?";
+        btn.innerHTML = _confirmIcon();
         btn.style.color = "#ff453a";
+        btn.setAttribute("aria-label", "Confirm delete");
         setTimeout(() => {
-          if (btn.dataset.confirming) { delete btn.dataset.confirming; btn.textContent = "×"; btn.style.color = ""; }
+          if (btn.dataset.confirming) {
+            delete btn.dataset.confirming;
+            btn.textContent = "×";
+            btn.style.color = "";
+            btn.setAttribute("aria-label", `Delete preset ${esc(p.name)}`);
+          }
         }, 3000);
       }
     });
@@ -1103,10 +1116,16 @@ async function loadRecordings() {
         loadRecordings();
       } else {
         btn.dataset.confirming = "1";
-        btn.textContent = "Sure?";
+        btn.innerHTML = _confirmIcon();
         btn.style.color = "#ff453a";
+        btn.setAttribute("aria-label", "Confirm delete");
         setTimeout(() => {
-          if (btn.dataset.confirming) { delete btn.dataset.confirming; btn.textContent = "×"; btn.style.color = ""; }
+          if (btn.dataset.confirming) {
+            delete btn.dataset.confirming;
+            btn.textContent = "×";
+            btn.style.color = "";
+            btn.setAttribute("aria-label", `Delete ${esc(label)}`);
+          }
         }, 3000);
       }
     });
@@ -1315,6 +1334,10 @@ function showToast(msg) {
 
 function esc(s) {
   return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function _confirmIcon() {
+  return `<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

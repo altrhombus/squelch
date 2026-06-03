@@ -198,7 +198,7 @@
               <p id="station-slogan" class="muted hidden"></p>
 
               <!-- HD sub-channel selector — rendered by applyMeta when hd_locked + multiple channels -->
-              <div id="hd-channels" hidden role="group" aria-label="HD Radio channels"></div>
+              <div id="hd-channels" class="hidden" role="group" aria-label="HD Radio channels"></div>
 
               <div id="track-info" aria-live="polite">
                 <p id="track-artist" class="hidden"></p>
@@ -216,8 +216,8 @@
                 </div>
                 <button id="btn-record" class="btn-icon" aria-label="Start recording" aria-pressed="false">
                   <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg>
-                  <span id="rec-elapsed" class="rec-elapsed" aria-live="off"></span>
                 </button>
+                <span id="rec-elapsed" class="rec-elapsed" aria-live="off"></span>
               </div>
             </div><!-- #now-info -->
 

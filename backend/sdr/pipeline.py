@@ -305,6 +305,23 @@ class RadioPipeline:
             return 0.3
         return 0.0
 
+    def get_diag(self) -> dict:
+        """Snapshot of current DSP diagnostic values for the WebSocket broadcast."""
+        if not self._demod:
+            return {}
+        d: dict = {
+            "iq_rms": float(getattr(self._demod, "last_iq_rms", 0.0)),
+        }
+        if self._band in ("fm", "wx"):
+            d["composite_rms"] = float(getattr(self._demod, "last_composite_rms", 0.0))
+            d["pilot_rms"]     = float(getattr(self._demod, "last_pilot_rms",     0.0))
+            d["noise_rms"]     = float(getattr(self._demod, "last_noise_rms",     0.0))
+            d["blend"]         = float(getattr(self._demod, "last_blend",         0.0))
+            d["audio_rms"]     = float(getattr(self._demod, "last_audio_rms",     0.0))
+        if self._current_gain is not None:
+            d["gain_db"] = self._current_gain
+        return d
+
     def _make_demod(self, band: str, freq_hz: float, deemphasis_us: int, stereo_mode: str = "auto"):
         if band in ("fm", "wx"):
             return FmStereoDemodulator(deemphasis_us=deemphasis_us, stereo_mode=stereo_mode,
