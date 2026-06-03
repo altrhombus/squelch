@@ -186,10 +186,10 @@ class RadioPipeline:
         hold_blocks = 0   # blocks since last gain step
         try:
             async for iq in sdr.stream(block):
-                # Suspend DSP (but keep reading from the SDR to avoid USB
-                # buffer overflows) until at least one browser/recorder client
-                # is connected.  Returns instantly when active.
-                await self._streams.wait_for_clients()
+                # Skip DSP when no clients are active, but keep consuming IQ
+                # blocks so the rtlsdraio USB queue never backs up.
+                if not self._streams.is_active():
+                    continue
                 chunk = await loop.run_in_executor(
                     self._executor,
                     self._process, iq, encoder,

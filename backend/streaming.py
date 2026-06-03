@@ -166,6 +166,10 @@ class StreamingManager:
         """Await until at least one client is connected (or reconnects)."""
         await self._active_event.wait()
 
+    def is_active(self) -> bool:
+        """Non-blocking check: True if DSP should run (event is set)."""
+        return self._active_event.is_set()
+
     def broadcast(self, chunk: bytes):
         if not chunk or not self._clients:
             return
