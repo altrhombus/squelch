@@ -70,6 +70,23 @@
            ═══════════════════════════════════════ -->
       <div id="center-col">
 
+        <!-- Column header: drag handle + label + collapse button (desktop only) -->
+        <div class="col-header" aria-label="Tuner column">
+          <button class="col-drag-handle" data-col="center-col" aria-label="Drag to reorder Tuner column" tabindex="0">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16" aria-hidden="true">
+              <circle cx="7" cy="4"  r="1.6"/><circle cx="13" cy="4"  r="1.6"/>
+              <circle cx="7" cy="10" r="1.6"/><circle cx="13" cy="10" r="1.6"/>
+              <circle cx="7" cy="16" r="1.6"/><circle cx="13" cy="16" r="1.6"/>
+            </svg>
+          </button>
+          <span class="col-label">Tuner</span>
+          <button class="col-collapse-btn" data-col="center-col" data-collapsed="false" aria-label="Collapse Tuner column" aria-expanded="true">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" aria-hidden="true">
+              <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>
+            </svg>
+          </button>
+        </div>
+
         <section id="tuner-section" data-band="fm">
 
           <!-- Band tabs — shown on phone/tablet; toolbar carries them on desktop -->
@@ -162,6 +179,17 @@
            ═══════════════════════════════════════ -->
       <div id="left-col">
 
+        <!-- Now-playing column: drag handle only (not collapsible) -->
+        <div class="col-header col-header-center" aria-label="Now Playing column">
+          <button class="col-drag-handle" data-col="left-col" aria-label="Drag to reorder Now Playing column" tabindex="0">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16" aria-hidden="true">
+              <circle cx="7" cy="4"  r="1.6"/><circle cx="13" cy="4"  r="1.6"/>
+              <circle cx="7" cy="10" r="1.6"/><circle cx="13" cy="10" r="1.6"/>
+              <circle cx="7" cy="16" r="1.6"/><circle cx="13" cy="16" r="1.6"/>
+            </svg>
+          </button>
+        </div>
+
         <header id="now-playing" aria-label="Now Playing">
 
           <!-- Full-bleed blurred art background -->
@@ -233,6 +261,23 @@
            LIBRARY  (#right-col — visual RIGHT on desktop)
            ═══════════════════════════════════════ -->
       <div id="right-col">
+
+        <!-- Column header: collapse button + label + drag handle (desktop only) -->
+        <div class="col-header" aria-label="Library column">
+          <button class="col-collapse-btn" data-col="right-col" data-collapsed="false" aria-label="Collapse Library column" aria-expanded="true">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" aria-hidden="true">
+              <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>
+            </svg>
+          </button>
+          <span class="col-label">Library</span>
+          <button class="col-drag-handle" data-col="right-col" aria-label="Drag to reorder Library column" tabindex="0">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16" aria-hidden="true">
+              <circle cx="7" cy="4"  r="1.6"/><circle cx="13" cy="4"  r="1.6"/>
+              <circle cx="7" cy="10" r="1.6"/><circle cx="13" cy="10" r="1.6"/>
+              <circle cx="7" cy="16" r="1.6"/><circle cx="13" cy="16" r="1.6"/>
+            </svg>
+          </button>
+        </div>
 
         <!-- Library section tabs -->
         <div class="lib-tabs" role="tablist" aria-label="Library sections">

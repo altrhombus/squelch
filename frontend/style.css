@@ -1510,24 +1510,21 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
 
   #mini-player { top: var(--toolbar-h); }
 
+  /* Flex layout — widths live on the elements so reordering via `order` works
+     correctly without updating a parent grid-template-columns property */
   #app {
     max-width: 1480px;
-    display: grid;
-    grid-template-columns: 260px minmax(0, 1fr) 300px;
-    grid-template-rows: auto;
-    column-gap: var(--gap-lg);
-    row-gap: 0;
-    align-items: start;
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: var(--gap-lg);
     padding: var(--gap-lg) 28px;
   }
 
-  /* Desktop visual layout: tuner | now-playing | library
-     DOM order: center-col, left-col, right-col (matches keyboard nav) */
   #center-col {
-    grid-column: 1;
-    grid-row: 1;
-    order: 1;
+    flex: 0 0 260px;
     min-width: 0;
+    order: 1;
     position: sticky;
     top: calc(var(--toolbar-h) + 8px);
     max-height: calc(100vh - var(--toolbar-h) - 24px);
@@ -1535,27 +1532,24 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
     overflow-x: hidden;
     scrollbar-width: thin;
     scrollbar-color: var(--surface2) transparent;
+    transition: flex-basis var(--dur-slow) var(--ease-smooth);
   }
   #center-col::-webkit-scrollbar { width: 4px; }
   #center-col::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 2px; }
 
   #left-col {
-    grid-column: 2;
-    grid-row: 1;
-    order: 2;
+    flex: 1 1 0;
     min-width: 0;
-    /* not sticky — scrolls with the page, driving mini-player appearance */
+    order: 2;
     position: static;
     max-height: none;
     overflow-y: visible;
   }
 
   #right-col {
-    grid-column: 3;
-    grid-row: 1;
-    order: 3;
+    flex: 0 0 300px;
     min-width: 0;
-    width: 300px;      /* explicit width prevents sticky element from stretching */
+    order: 3;
     position: sticky;
     top: calc(var(--toolbar-h) + 8px);
     max-height: calc(100vh - var(--toolbar-h) - 24px);
@@ -1563,6 +1557,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
     overflow-x: hidden;
     scrollbar-width: thin;
     scrollbar-color: var(--surface2) transparent;
+    transition: flex-basis var(--dur-slow) var(--ease-smooth);
   }
   #right-col::-webkit-scrollbar { width: 4px; }
   #right-col::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 2px; }
@@ -1607,6 +1602,135 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
   #history-list { max-height: 320px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--surface2) transparent; }
   #history-list::-webkit-scrollbar { width: 4px; }
   #history-list::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 2px; }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Column headers — drag handles, labels, collapse buttons
+   Hidden on phone/tablet; activated by the desktop media query above.
+   ═══════════════════════════════════════════════════════════ */
+
+.col-header {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 10px;
+  gap: 4px;
+  flex-shrink: 0;
+  user-select: none;
+}
+.col-header-center { justify-content: center; }
+
+/* Grip icon on drag handle */
+.col-drag-handle {
+  background: none;
+  border: none;
+  display: flex;
+  align-items: center;
+  padding: 4px 5px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: grab;
+  touch-action: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast), background var(--dur-fast), transform var(--dur-fast);
+  flex-shrink: 0;
+}
+.col-drag-handle:active { cursor: grabbing; transform: scale(0.93); }
+.col-drag-handle:focus-visible { outline: 2px solid var(--accent-dynamic); outline-offset: 2px; opacity: 1; }
+
+#center-col:hover .col-drag-handle,
+#left-col:hover   .col-drag-handle,
+#right-col:hover  .col-drag-handle { opacity: 1; }
+
+/* Collapse/expand toggle button */
+.col-collapse-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity var(--dur-fast), background var(--dur-fast), color var(--dur-fast);
+  flex-shrink: 0;
+}
+.col-collapse-btn svg { transition: transform var(--dur-mid) var(--ease-smooth); }
+.col-collapse-btn:hover  { background: var(--surface2); color: var(--text); }
+.col-collapse-btn:active { transform: scale(0.9); }
+.col-collapse-btn:focus-visible { outline: 2px solid var(--accent-dynamic); outline-offset: 2px; opacity: 1; }
+
+#center-col:hover .col-collapse-btn,
+#right-col:hover  .col-collapse-btn { opacity: 1; }
+
+/* Chevron direction — points toward the "outside" when expanded, inward when collapsed.
+   Center col (tuner, default left): ← expanded, → collapsed.
+   Right col (library, default right): → expanded, ← collapsed. */
+#center-col .col-collapse-btn[data-collapsed="false"] svg { transform: rotate(0deg); }
+#center-col .col-collapse-btn[data-collapsed="true"]  svg { transform: rotate(180deg); }
+#right-col  .col-collapse-btn[data-collapsed="false"] svg { transform: rotate(180deg); }
+#right-col  .col-collapse-btn[data-collapsed="true"]  svg { transform: rotate(0deg); }
+
+/* Column label — hidden normally, shown as rotated text when collapsed */
+.col-label {
+  display: none;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+  pointer-events: none;
+  margin: 0 auto;
+}
+
+/* ── Collapsed column state ── */
+@media (min-width: 1024px) {
+  .col-header { display: flex; }
+
+  #center-col.col-collapsed { flex-basis: 40px; overflow: hidden; }
+  #right-col.col-collapsed  { flex-basis: 40px; overflow: hidden; }
+
+  /* Collapsed header: stack vertically, show rotated label */
+  .col-collapsed .col-header {
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: center;
+    padding: 8px 0 0;
+    gap: 10px;
+    height: 160px;
+  }
+  .col-collapsed .col-label  { display: block; }
+  .col-collapsed .col-drag-handle { display: none; }
+  /* Always show collapse button when collapsed */
+  .col-collapsed .col-collapse-btn { opacity: 1; }
+
+  /* Hide all column content (only col-header stays visible) */
+  .col-collapsed > :not(.col-header) {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  /* Dragging visual feedback */
+  .col-dragging { opacity: 0.6; }
+  .col-drag-over > .col-header { background: rgba(var(--art-r), var(--art-g), var(--art-b), 0.08); border-radius: var(--radius-sm); }
+}
+
+/* Tablet: right-col only, collapse using max-height (no flex-basis animation in grid) */
+@media (min-width: 640px) and (max-width: 1023px) {
+  #right-col {
+    overflow: hidden;
+    max-height: 3000px;
+    transition: max-height 500ms var(--ease-smooth);
+  }
+  #right-col.col-collapsed { max-height: 48px; }
+  #right-col .col-header    { display: flex; }
+  #right-col .col-header .col-drag-handle { display: none; }
+  #right-col:hover .col-collapse-btn,
+  #right-col .col-collapse-btn { opacity: 1; }
 }
 
 /* ═══════════════════════════════════════════════════════════

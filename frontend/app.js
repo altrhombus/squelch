@@ -1299,6 +1299,175 @@ function timeAgo(ts) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Column layout — drag-to-reorder + collapsible (desktop ≥1024px)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Visual order of column IDs (left → right on desktop)
+let _colOrder     = ["center-col", "left-col", "right-col"];
+// Collapsed state for the two side columns
+let _colCollapsed = { "center-col": false, "right-col": false };
+
+function initColLayout() {
+  if (window.innerWidth < 1024) return;
+  const p = getLayoutPrefs();
+  if (Array.isArray(p.colOrder) && p.colOrder.length === 3) _colOrder = p.colOrder;
+  if (p.colCollapsed && typeof p.colCollapsed === "object") {
+    _colCollapsed = { "center-col": false, "right-col": false, ...p.colCollapsed };
+  }
+  _applyColOrder();
+  _applyColCollapsed();
+}
+
+function _applyColOrder() {
+  _colOrder.forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (el) el.style.order = i + 1;
+  });
+}
+
+function _applyColCollapsed() {
+  ["center-col", "right-col"].forEach(id => {
+    const el  = document.getElementById(id);
+    const btn = el?.querySelector(".col-collapse-btn");
+    const collapsed = !!_colCollapsed[id];
+    if (!el) return;
+
+    el.classList.toggle("col-collapsed", collapsed);
+    if (btn) {
+      btn.setAttribute("aria-expanded", String(!collapsed));
+      btn.setAttribute("aria-label",
+        (collapsed ? "Expand" : "Collapse") + " " +
+        (id === "center-col" ? "Tuner" : "Library") + " column");
+      btn.dataset.collapsed = collapsed ? "true" : "false";
+    }
+  });
+}
+
+function toggleColCollapse(colId) {
+  if (!["center-col", "right-col"].includes(colId)) return;
+  _colCollapsed[colId] = !_colCollapsed[colId];
+  _applyColCollapsed();
+  saveLayoutPref("colCollapsed", _colCollapsed);
+  // Redraw freq strip after the flex-basis transition completes
+  setTimeout(drawFreqStrip, 520);
+}
+
+// ── Drag-to-reorder ──────────────────────────────────────────────────────────
+
+let _dragState      = null;
+let _flipCleanup    = null;
+
+function setupColDrag() {
+  document.querySelectorAll(".col-drag-handle").forEach(handle => {
+    handle.addEventListener("pointerdown", _onColDragStart);
+  });
+}
+
+function _onColDragStart(e) {
+  if (window.innerWidth < 1024) return;
+  e.preventDefault();
+  const handle = e.currentTarget;
+  handle.setPointerCapture(e.pointerId);
+
+  const colId = handle.dataset.col;
+  const colEl = document.getElementById(colId);
+  if (!colEl) return;
+
+  _dragState = {
+    pointerId: e.pointerId,
+    colId,
+    colEl,
+    startX:  e.clientX,
+    swapCooldown: false,
+    handle,
+  };
+
+  colEl.classList.add("col-dragging");
+  handle.addEventListener("pointermove",   _onColDragMove);
+  handle.addEventListener("pointerup",     _onColDragEnd);
+  handle.addEventListener("pointercancel", _onColDragEnd);
+}
+
+function _onColDragMove(e) {
+  if (!_dragState || e.pointerId !== _dragState.pointerId) return;
+  const dx       = e.clientX - _dragState.startX;
+  const colWidth = _dragState.colEl.offsetWidth;
+  const threshold = Math.max(60, colWidth * 0.35);
+  const idx = _colOrder.indexOf(_dragState.colId);
+
+  if (!_dragState.swapCooldown) {
+    if (dx < -threshold && idx > 0) {
+      _flipSwap(idx, idx - 1);
+      _dragState.startX = e.clientX;
+      _dragState.swapCooldown = true;
+      setTimeout(() => { if (_dragState) _dragState.swapCooldown = false; }, 360);
+    } else if (dx > threshold && idx < _colOrder.length - 1) {
+      _flipSwap(idx, idx + 1);
+      _dragState.startX = e.clientX;
+      _dragState.swapCooldown = true;
+      setTimeout(() => { if (_dragState) _dragState.swapCooldown = false; }, 360);
+    }
+  }
+}
+
+function _onColDragEnd(e) {
+  if (!_dragState || e.pointerId !== _dragState.pointerId) return;
+  _dragState.colEl.classList.remove("col-dragging");
+  const h = _dragState.handle;
+  h.removeEventListener("pointermove",   _onColDragMove);
+  h.removeEventListener("pointerup",     _onColDragEnd);
+  h.removeEventListener("pointercancel", _onColDragEnd);
+  _dragState = null;
+}
+
+function _flipSwap(idxA, idxB) {
+  const cols = _colOrder.map(id => document.getElementById(id));
+
+  // FIRST: record current positions before mutation
+  const beforeRects = cols.map(el => el?.getBoundingClientRect());
+
+  // Mutate order
+  [_colOrder[idxA], _colOrder[idxB]] = [_colOrder[idxB], _colOrder[idxA]];
+  _applyColOrder();
+
+  // LAST: record new positions (synchronous read forces reflow)
+  const afterRects = cols.map(el => el?.getBoundingClientRect());
+
+  // INVERT: push each element back to its old visual position using transforms
+  cols.forEach((el, i) => {
+    if (!el || !beforeRects[i] || !afterRects[i]) return;
+    const dx = beforeRects[i].left - afterRects[i].left;
+    if (Math.abs(dx) < 1) return;
+    el.style.transition = "none";
+    el.style.transform  = `translateX(${dx}px)`;
+  });
+
+  // PLAY: next frame removes the inverted transforms so CSS transition animates to final position
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      cols.forEach(el => {
+        if (!el) return;
+        el.style.transition = "transform 320ms cubic-bezier(0.4, 0, 0.2, 1)";
+        el.style.transform  = "";
+      });
+    });
+  });
+
+  // Clean up inline styles after animation
+  clearTimeout(_flipCleanup);
+  _flipCleanup = setTimeout(() => {
+    cols.forEach(el => {
+      if (!el) return;
+      el.style.transition = "";
+      el.style.transform  = "";
+    });
+    drawFreqStrip();
+  }, 340);
+
+  saveLayoutPref("colOrder", _colOrder);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Modal — save preset (with focus trap)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1503,6 +1672,11 @@ document.getElementById("diagnostics-drawer")?.addEventListener("toggle", functi
   if (btn) btn.setAttribute("aria-expanded", String(this.open));
 });
 
+// Column collapse buttons (desktop ≥1024px; also tablet for #right-col)
+document.querySelectorAll(".col-collapse-btn").forEach(btn => {
+  btn.addEventListener("click", () => toggleColCollapse(btn.dataset.col));
+});
+
 // Keyboard shortcuts
 document.addEventListener("keydown", (e) => {
   const tag = document.activeElement?.tagName?.toLowerCase();
@@ -1536,6 +1710,8 @@ document.addEventListener("keydown", (e) => {
 setBand("fm");
 initPanels();
 initLibTabs();
+initColLayout();
+setupColDrag();
 setupMiniPlayer();
 setupFreqStrip();
 connectWs();
@@ -1562,25 +1738,28 @@ api("GET", "/record/status").then(s => {
 });
 
 // Redraw freq strip on window resize; restore column layout when leaving mobile.
-// initPanels() and activateTab() set inline style.display on columns for phone
-// panel switching — those inline styles win over CSS media queries, so when the
-// viewport grows back above 640px we must clear them or columns stay hidden.
 let _stripResizeTimer = null;
-let _prevWasPhone = window.innerWidth < 640;
+let _prevWasPhone   = window.innerWidth < 640;
+let _prevWasDesktop = window.innerWidth >= 1024;
 
 window.addEventListener("resize", () => {
-  const isPhone = window.innerWidth < 640;
+  const isPhone   = window.innerWidth < 640;
+  const isDesktop = window.innerWidth >= 1024;
 
+  // Crossing phone → tablet/desktop: clear inline display styles set by the
+  // mobile panel switcher so CSS media queries take control again.
   if (_prevWasPhone && !isPhone) {
-    // Crossing phone → tablet/desktop: remove all inline display/animation styles
-    // set by the mobile panel switcher so CSS media queries take control again.
     ["left-col", "center-col", "right-col"].forEach(id => {
       const el = document.getElementById(id);
       if (el) { el.style.display = ""; el.style.opacity = ""; el.style.animation = ""; }
     });
   }
 
-  _prevWasPhone = isPhone;
+  // Crossing tablet → desktop: re-apply saved column order and collapse state.
+  if (!_prevWasDesktop && isDesktop) initColLayout();
+
+  _prevWasPhone   = isPhone;
+  _prevWasDesktop = isDesktop;
   clearTimeout(_stripResizeTimer);
   _stripResizeTimer = setTimeout(drawFreqStrip, 150);
 });
