@@ -210,6 +210,7 @@ html, body {
 #app-shell {
   display: flex;
   flex-direction: column;
+  overflow-x: clip; /* hide any transient horizontal overflow during resize reflows */
 }
 
 /* Phone: single column, panels toggle */
@@ -1512,7 +1513,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
   #app {
     max-width: 1480px;
     display: grid;
-    grid-template-columns: 260px 1fr 300px;
+    grid-template-columns: 260px minmax(0, 1fr) 300px;
     grid-template-rows: auto;
     column-gap: var(--gap-lg);
     row-gap: 0;
@@ -1526,10 +1527,12 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
     grid-column: 1;
     grid-row: 1;
     order: 1;
+    min-width: 0;
     position: sticky;
     top: calc(var(--toolbar-h) + 8px);
     max-height: calc(100vh - var(--toolbar-h) - 24px);
     overflow-y: auto;
+    overflow-x: hidden;
     scrollbar-width: thin;
     scrollbar-color: var(--surface2) transparent;
   }
@@ -1540,6 +1543,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
     grid-column: 2;
     grid-row: 1;
     order: 2;
+    min-width: 0;
     /* not sticky — scrolls with the page, driving mini-player appearance */
     position: static;
     max-height: none;
@@ -1550,10 +1554,13 @@ input[type="range"]:focus-visible { outline: 2px solid var(--accent-dynamic); ou
     grid-column: 3;
     grid-row: 1;
     order: 3;
+    min-width: 0;
+    width: 300px;      /* explicit width prevents sticky element from stretching */
     position: sticky;
     top: calc(var(--toolbar-h) + 8px);
     max-height: calc(100vh - var(--toolbar-h) - 24px);
     overflow-y: auto;
+    overflow-x: hidden;
     scrollbar-width: thin;
     scrollbar-color: var(--surface2) transparent;
   }

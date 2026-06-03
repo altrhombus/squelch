@@ -487,10 +487,9 @@ function applyMeta(m) {
     elTrackTitle.classList.add("muted");
   }
 
-  // Track change animation + art re-check
+  // Track change animation
   if (trackKey !== _prevTrackKey && (m.artist || m.title)) {
     _prevTrackKey = trackKey;
-    _prevArtVersion = -1;
     const nowInfo = document.getElementById("now-info");
     if (nowInfo) {
       nowInfo.classList.remove("track-changing");
