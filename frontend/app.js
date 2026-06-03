@@ -38,7 +38,7 @@ let _lastMeta = null;
 const player     = document.getElementById("player");
 const btnPlay    = document.getElementById("btn-play");
 const iconPlay   = document.getElementById("icon-play");
-const iconPause  = document.getElementById("icon-pause");
+const iconStop   = document.getElementById("icon-stop");
 const btnRecord  = document.getElementById("btn-record");
 const volume     = document.getElementById("volume");
 const dial       = document.getElementById("dial");
@@ -100,9 +100,9 @@ function setBand(band) {
 
 function buildDialTicks(r) {
   dialTicks.innerHTML = "";
-  const count = 6;
-  for (let i = 0; i <= count; i++) {
-    const v = r.min + ((r.max - r.min) * i / count);
+  const intervals = 4; // 5 labels total — gives enough space to avoid crowding
+  for (let i = 0; i <= intervals; i++) {
+    const v = r.min + ((r.max - r.min) * i / intervals);
     const s = document.createElement("span");
     s.textContent = formatFreq(v, currentBand);
     dialTicks.appendChild(s);
@@ -179,17 +179,17 @@ function setBandIfChanged(band) {
 function setPlayState(playing) {
   isPlaying = playing;
   iconPlay.classList.toggle("hidden",  playing);
-  iconPause.classList.toggle("hidden", !playing);
+  iconStop.classList.toggle("hidden", !playing);
   btnPlay.setAttribute("aria-pressed", playing);
-  btnPlay.setAttribute("aria-label",   playing ? "Pause" : "Play");
+  btnPlay.setAttribute("aria-label",   playing ? "Stop" : "Play");
 
   // Mini-player play button sync
   const miniIconPlay  = document.getElementById("mini-icon-play");
-  const miniIconPause = document.getElementById("mini-icon-pause");
+  const miniIconStop  = document.getElementById("mini-icon-pause"); // element id unchanged
   const miniBtn       = document.getElementById("mini-btn-play");
-  if (miniBtn)       { miniBtn.setAttribute("aria-pressed", playing); miniBtn.setAttribute("aria-label", playing ? "Pause" : "Play"); }
-  if (miniIconPlay)  miniIconPlay.classList.toggle("hidden",  playing);
-  if (miniIconPause) miniIconPause.classList.toggle("hidden", !playing);
+  if (miniBtn)      { miniBtn.setAttribute("aria-pressed", playing); miniBtn.setAttribute("aria-label", playing ? "Stop" : "Play"); }
+  if (miniIconPlay) miniIconPlay.classList.toggle("hidden",  playing);
+  if (miniIconStop) miniIconStop.classList.toggle("hidden", !playing);
 
   updateMediaSession(null); // update playback state only
 }
@@ -321,11 +321,36 @@ function extractDominantColor(imgEl) {
     r = Math.round(r / n);
     g = Math.round(g / n);
     b = Math.round(b / n);
+
     // Boost saturation toward the dominant channel
     const mx = Math.max(r, g, b), k = 1.5;
     r = Math.min(255, Math.round(r * (r === mx ? k : 1 / k)));
     g = Math.min(255, Math.round(g * (g === mx ? k : 1 / k)));
     b = Math.min(255, Math.round(b * (b === mx ? k : 1 / k)));
+
+    // Enforce readable luminance — W3C relative luminance (0–1 scale)
+    const toLinear = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    const lum = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+    const isLightMode = window.matchMedia("(prefers-color-scheme: light)").matches;
+
+    if (isLightMode) {
+      // Light mode: colour must be dark enough to contrast against light surfaces
+      // If too bright (lum > 0.35), darken by scaling toward black
+      if (lum > 0.35) {
+        const scale = 0.45 / lum;
+        r = Math.round(r * scale); g = Math.round(g * scale); b = Math.round(b * scale);
+      }
+    } else {
+      // Dark mode: colour must be bright enough to show against dark surfaces
+      // If too dark (lum < 0.08), brighten by scaling toward white
+      if (lum < 0.08) {
+        const scale = 0.18 / Math.max(lum, 0.001);
+        r = Math.min(255, Math.round(r * scale));
+        g = Math.min(255, Math.round(g * scale));
+        b = Math.min(255, Math.round(b * scale));
+      }
+    }
+
     return `rgb(${r},${g},${b})`;
   } catch {
     return null; // CORS or canvas security error — silently skip
@@ -388,14 +413,14 @@ function applyMeta(m) {
     elTrackTitle.classList.add("muted");
   }
 
-  // Track change animation
+  // Track change animation + force art re-check in case version arrives separately
   if (trackKey !== _prevTrackKey && (m.artist || m.title)) {
     _prevTrackKey = trackKey;
+    _prevArtVersion = -1; // reset so the next metadata push re-evaluates art even if URL unchanged
     const nowInfo = document.getElementById("now-info");
     if (nowInfo) {
       nowInfo.classList.remove("track-changing");
-      // Trigger reflow to restart animation
-      void nowInfo.offsetWidth;
+      void nowInfo.offsetWidth; // reflow to restart animation
       nowInfo.classList.add("track-changing");
       nowInfo.addEventListener("animationend", () => nowInfo.classList.remove("track-changing"), { once: true });
     }
@@ -928,9 +953,17 @@ async function loadPresets() {
     `;
     item.querySelector(".btn-delete").addEventListener("click", async (e) => {
       e.stopPropagation();
-      if (confirm(`Delete "${p.name}"?`)) {
+      const btn = e.currentTarget;
+      if (btn.dataset.confirming) {
         await api("DELETE", `/presets/${p.id}`);
         loadPresets();
+      } else {
+        btn.dataset.confirming = "1";
+        btn.textContent = "Sure?";
+        btn.style.color = "#e03030";
+        setTimeout(() => {
+          if (btn.dataset.confirming) { delete btn.dataset.confirming; btn.textContent = "×"; btn.style.color = ""; }
+        }, 3000);
       }
     });
     item.addEventListener("click", (e) => {
@@ -985,9 +1018,17 @@ async function loadRecordings() {
     });
     item.querySelector(".btn-delete").addEventListener("click", async (e) => {
       e.stopPropagation();
-      if (confirm("Delete this recording?")) {
+      const btn = e.currentTarget;
+      if (btn.dataset.confirming) {
         await api("DELETE", `/recordings/${r.id}`);
         loadRecordings();
+      } else {
+        btn.dataset.confirming = "1";
+        btn.textContent = "Sure?";
+        btn.style.color = "#e03030";
+        setTimeout(() => {
+          if (btn.dataset.confirming) { delete btn.dataset.confirming; btn.textContent = "×"; btn.style.color = ""; }
+        }, 3000);
       }
     });
     recordingsList.appendChild(item);
@@ -1051,7 +1092,9 @@ async function loadHistory() {
             : ""}
         </div>
         ${musicUrl ? `<a class="btn-music" href="${musicUrl}" target="_blank" rel="noopener" aria-label="Open in Apple Music" title="Open in Apple Music">♫</a>` : ""}
-        <button class="btn-delete btn-history-del" aria-label="Delete history item" title="Delete">×</button>
+        <button class="btn-history-del" aria-label="Delete history item" title="Delete">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        </button>
       </div>
     `;
 

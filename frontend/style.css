@@ -497,8 +497,9 @@ input[type="range"]:focus-visible {
   pointer-events: none;
 }
 #dial-ticks span {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--muted);
+  letter-spacing: -0.02em;
 }
 
 #freq-input-wrap {
@@ -754,9 +755,31 @@ h2 {
 }
 .btn-music:hover { color: var(--text); }
 
-.btn-history-del { display: none; }
+/* Delete button: absolutely positioned top-right, never overlaps music link */
+.btn-history-del {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: var(--surface);
+  border: none;
+  border-radius: 50%;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast), color var(--dur-fast);
+}
+.btn-history-del:hover { color: #e03030; }
+.btn-history-del:focus-visible { outline: 2px solid var(--accent-dynamic); opacity: 1; pointer-events: auto; }
 @media (hover: hover) {
-  .history-row:hover .btn-history-del { display: flex; }
+  .history-row:hover .btn-history-del {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* =====================================================
@@ -1283,13 +1306,38 @@ h2 {
   }
   .btn-small, .band-tab { color: #111; }
   #freq-input { color: #111; }
-  #art-blur-bg { filter: blur(var(--blur-strength)) brightness(1.5) saturate(0.4); opacity: 0.5; }
+
+  /* Darken the blur BG in light mode so white/bright art doesn't wash out text */
+  #art-blur-bg { filter: blur(var(--blur-strength)) brightness(0.55) saturate(1.4); opacity: 0.9; }
+
+  /* Hero always uses light-coloured text regardless of system theme —
+     the blurred art background provides the backdrop, not the page colour */
+  #now-playing-content {
+    color: #f0f0f0;
+  }
+  #now-playing .muted,
+  #now-playing #station-slogan {
+    color: rgba(240, 240, 240, 0.72) !important;
+  }
+  #now-playing #station-name,
+  #now-playing #track-title,
+  #now-playing #track-artist {
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+  }
+  /* Signal bars */
+  #signal-meter .bar { background: rgba(255, 255, 255, 0.25); }
+
+  /* Badges: keep readable against the darker hero */
+  #hd-badge  { color: #80c3ff; }
+  #pty-badge { color: var(--accent-dynamic); }
+
   .btn-icon:hover { background: rgba(0, 0, 0, 0.07); }
-  #btn-play { background: rgba(0, 0, 0, 0.07); border-color: rgba(0, 0, 0, 0.12); }
+  /* Play button inside hero should still be glassy light */
+  #btn-play { background: rgba(255, 255, 255, 0.18); border-color: rgba(255, 255, 255, 0.25); }
+
   #mini-player { border-bottom-color: rgba(0, 0, 0, 0.1); }
   #bottom-nav  { border-top-color:    rgba(0, 0, 0, 0.1); }
   #toolbar     { border-bottom-color: rgba(0, 0, 0, 0.1); }
-  #hd-badge { color: #0066cc; }
 }
 
 /* =====================================================
