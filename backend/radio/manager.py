@@ -214,15 +214,18 @@ class RadioManager:
                 bars, stereo = self._estimate_signal()
                 self._meta.update_signal(bars, stereo)
 
-                # Collect live DSP diagnostics from the pipeline (FM/WX only)
+                # Collect live DSP diagnostics from the pipeline (FM/WX only).
+                # Always broadcast when diagnostics are present so the meters
+                # update at 1 Hz even when signal bars and state are steady.
+                has_diag = False
                 if self._pipeline:
                     diag = self._pipeline.get_diag()
                     if diag:
                         self._meta.diag = diag
+                        has_diag = True
 
-                # Only push a WebSocket frame when user-visible state changed.
                 cur = (bars, stereo, self._meta.state)
-                if cur != _prev:
+                if cur != _prev or has_diag:
                     _prev = cur
                     await self._meta.broadcast()
         except asyncio.CancelledError:
