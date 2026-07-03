@@ -106,6 +106,19 @@ def _syndrome_matches(word26: int) -> Optional[str]:
 # Main decoder
 # ---------------------------------------------------------------------------
 
+def _rt_chars_ok(chars: list) -> bool:
+    """Printable ASCII or the 0x0D message terminator — anything else is a
+    bit error (RadioText has no charset guard in the protocol itself)."""
+    return all(0x20 <= ord(ch) < 0x7F or ch == "\r" for ch in chars)
+
+
+def _rt_emit(rt_chars: dict, n_segs: int) -> str:
+    """Join received segments and honor the 0x0D terminator — everything
+    after it is padding."""
+    full = "".join("".join(rt_chars[s]) for s in range(n_segs))
+    return full.split("\r")[0].rstrip()
+
+
 def _zero_zi(sos):
     return np.zeros((sos.shape[0], 2), dtype=np.float64)
 
@@ -356,12 +369,14 @@ class RdsDecoder:
                 chr((c >> 8) & 0xFF), chr(c & 0xFF),
                 chr((d >> 8) & 0xFF), chr(d & 0xFF),
             ]
-            self._rt_chars[seg] = chars
+            # Reject corrupted segments (bit errors show as non-printable
+            # bytes — observed live as '\\x86ãWM' flashing in the UI); the
+            # segment comes around again on the next RT cycle.  0x0D is the
+            # RDS message terminator and is legal.
+            if _rt_chars_ok(chars):
+                self._rt_chars[seg] = chars
             if len(self._rt_chars) == 16:
-                rt = "".join(
-                    "".join(self._rt_chars[s]) for s in range(16)
-                ).rstrip()
-                update["rt"] = rt
+                update["rt"] = _rt_emit(self._rt_chars, 16)
 
         elif group_type == 2 and b0 == 1:   # Group 2B — RadioText (32 chars)
             seg   = b & 0xF
@@ -370,12 +385,10 @@ class RdsDecoder:
                 self._rt_chars.clear()
                 self._rt_flag = flag
             chars = [chr((d >> 8) & 0xFF), chr(d & 0xFF)]
-            self._rt_chars[seg] = chars
+            if _rt_chars_ok(chars):
+                self._rt_chars[seg] = chars
             if len(self._rt_chars) == 16:
-                rt = "".join(
-                    "".join(self._rt_chars[s]) for s in range(16)
-                ).rstrip()
-                update["rt"] = rt
+                update["rt"] = _rt_emit(self._rt_chars, 16)
 
         elif group_type == 3 and b0 == 0:  # Group 3A — ODA application announcement
             # Block C = 16-bit Application ID

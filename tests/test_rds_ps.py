@@ -83,3 +83,59 @@ def test_nonprintable_page_rejected():
     feed_segment(dec, 2, "Pa")
     feed_segment(dec, 3, "yo")
     assert ps_values(updates) == []
+
+
+# ---------------------------------------------------------------------------
+# RadioText corruption guard (group 2A)
+# ---------------------------------------------------------------------------
+
+def group2a(seg: int, four_chars: str, flag: int = 0):
+    b = (2 << 12) | (flag << 4) | seg
+    c = (ord(four_chars[0]) << 8) | ord(four_chars[1])
+    d = (ord(four_chars[2]) << 8) | ord(four_chars[3])
+    return [PI, b, c, d]
+
+
+def feed_rt(dec: RdsDecoder, text: str):
+    """Feed a full 64-char RadioText (padded) as 16 4-char segments."""
+    padded = text.ljust(64)
+    for seg in range(16):
+        dec._decode_group(group2a(seg, padded[seg * 4:seg * 4 + 4]),
+                          ["A", "B", "C", "D"])
+
+
+def rt_values(updates: list) -> list:
+    return [u["rt"] for u in updates if "rt" in u]
+
+
+def test_clean_radiotext_emitted():
+    updates = []
+    dec = make_decoder(updates)
+    feed_rt(dec, "Nobody owns us but you!")
+    assert rt_values(updates)[-1] == "Nobody owns us but you!"
+
+
+def test_corrupt_rt_segment_rejected_until_reheard():
+    """Bit-error segments (observed live as '\\x86ãWM' flashing in the UI)
+    must not reach the metadata layer; the clean re-transmission fills the
+    slot on the next RT cycle."""
+    updates = []
+    dec = make_decoder(updates)
+    # First pass: segment 3 corrupted
+    padded = "Nobody owns us but you!".ljust(64)
+    for seg in range(16):
+        chunk = padded[seg * 4:seg * 4 + 4] if seg != 3 else "y\x86\xe3W"
+        dec._decode_group(group2a(seg, chunk), ["A", "B", "C", "D"])
+    assert rt_values(updates) == []          # incomplete — corrupt seg dropped
+
+    # Second pass: clean
+    feed_rt(dec, "Nobody owns us but you!")
+    assert rt_values(updates)[-1] == "Nobody owns us but you!"
+    assert all("\x86" not in rt for rt in rt_values(updates))
+
+
+def test_rt_terminator_truncates():
+    updates = []
+    dec = make_decoder(updates)
+    feed_rt(dec, "Short message\rGARBAGE AFTER TERMINATOR")
+    assert rt_values(updates)[-1] == "Short message"
