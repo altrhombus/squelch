@@ -21,40 +21,31 @@ class PresetUpdate(BaseModel):
 
 async def list_presets() -> list[dict]:
     db = await get_db()
-    try:
-        async with db.execute(
-            "SELECT * FROM presets ORDER BY band, frequency"
-        ) as cur:
-            rows = await cur.fetchall()
-            return [dict(r) for r in rows]
-    finally:
-        await db.close()
+    async with db.execute(
+        "SELECT * FROM presets ORDER BY band, frequency"
+    ) as cur:
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
 
 async def get_preset(preset_id: int) -> Optional[dict]:
     db = await get_db()
-    try:
-        async with db.execute(
-            "SELECT * FROM presets WHERE id = ?", (preset_id,)
-        ) as cur:
-            row = await cur.fetchone()
-            return dict(row) if row else None
-    finally:
-        await db.close()
+    async with db.execute(
+        "SELECT * FROM presets WHERE id = ?", (preset_id,)
+    ) as cur:
+        row = await cur.fetchone()
+        return dict(row) if row else None
 
 
 async def create_preset(p: PresetCreate) -> dict:
     db = await get_db()
-    try:
-        cur = await db.execute(
-            """INSERT INTO presets (name, frequency, band, gain, stereo_mode)
-               VALUES (?, ?, ?, ?, ?)""",
-            (p.name, p.frequency, p.band, p.gain, p.stereo_mode),
-        )
-        await db.commit()
-        return await get_preset(cur.lastrowid)
-    finally:
-        await db.close()
+    cur = await db.execute(
+        """INSERT INTO presets (name, frequency, band, gain, stereo_mode)
+           VALUES (?, ?, ?, ?, ?)""",
+        (p.name, p.frequency, p.band, p.gain, p.stereo_mode),
+    )
+    await db.commit()
+    return await get_preset(cur.lastrowid)
 
 
 async def update_preset(preset_id: int, p: PresetUpdate) -> Optional[dict]:
@@ -63,39 +54,30 @@ async def update_preset(preset_id: int, p: PresetUpdate) -> Optional[dict]:
         return await get_preset(preset_id)
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     db = await get_db()
-    try:
-        await db.execute(
-            f"UPDATE presets SET {set_clause} WHERE id = ?",
-            (*fields.values(), preset_id),
-        )
-        await db.commit()
-        return await get_preset(preset_id)
-    finally:
-        await db.close()
+    await db.execute(
+        f"UPDATE presets SET {set_clause} WHERE id = ?",
+        (*fields.values(), preset_id),
+    )
+    await db.commit()
+    return await get_preset(preset_id)
 
 
 async def delete_preset(preset_id: int) -> bool:
     db = await get_db()
-    try:
-        cur = await db.execute("DELETE FROM presets WHERE id = ?", (preset_id,))
-        await db.commit()
-        return cur.rowcount > 0
-    finally:
-        await db.close()
+    cur = await db.execute("DELETE FROM presets WHERE id = ?", (preset_id,))
+    await db.commit()
+    return cur.rowcount > 0
 
 
 async def seed_default_presets(defaults: list[dict]):
     db = await get_db()
-    try:
-        async with db.execute("SELECT COUNT(*) FROM presets") as cur:
-            row = await cur.fetchone()
-            if row[0] > 0:
-                return
-        for p in defaults:
-            await db.execute(
-                "INSERT INTO presets (name, frequency, band) VALUES (?, ?, ?)",
-                (p["name"], p["frequency"], p["band"]),
-            )
-        await db.commit()
-    finally:
-        await db.close()
+    async with db.execute("SELECT COUNT(*) FROM presets") as cur:
+        row = await cur.fetchone()
+        if row[0] > 0:
+            return
+    for p in defaults:
+        await db.execute(
+            "INSERT INTO presets (name, frequency, band) VALUES (?, ?, ?)",
+            (p["name"], p["frequency"], p["band"]),
+        )
+    await db.commit()

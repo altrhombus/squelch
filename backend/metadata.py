@@ -166,10 +166,7 @@ class MetadataState:
             changed = True
         if art_path:
             try:
-                os.makedirs(ART_DIR, exist_ok=True)
-                shutil.copy2(art_path, ART_PATH)
-                self.has_art = True
-                self.art_version += 1
+                self._write_art(art_path)
                 changed = True
             except OSError as e:
                 logger.warning("Failed to copy cover art: %s", e)
@@ -181,6 +178,16 @@ class MetadataState:
         self.signal_bars = max(0, min(5, bars))
         if stereo is not None:
             self.stereo = stereo
+
+    def _write_art(self, src: str):
+        """Install new cover art atomically (temp file + rename) so a client
+        GET that races the update never receives a torn image."""
+        os.makedirs(ART_DIR, exist_ok=True)
+        tmp = ART_PATH + ".tmp"
+        shutil.copy2(src, tmp)
+        os.replace(tmp, ART_PATH)
+        self.has_art = True
+        self.art_version += 1
 
     def _clear_art(self):
         try:
@@ -245,9 +252,7 @@ class MetadataState:
                 result = await fetch_itunes_art(self.artist, self.title)
                 if result:
                     try:
-                        shutil.copy2(result["art_path"], ART_PATH)
-                        self.has_art = True
-                        self.art_version += 1
+                        self._write_art(result["art_path"])
                         self.apple_music_url = result.get("apple_music_url")
                         await self.broadcast()
                     except OSError as exc:
@@ -263,8 +268,8 @@ class MetadataState:
             return
         from .db import get_db
         now = int(_time.time())
-        db = await get_db()
         try:
+            db = await get_db()
             # Fetch recent candidates and match in Python using fuzzy comparison.
             # Exact SQL matching fails when RDS bit errors produce e.g.
             # "The Devil Is iinthe Details" vs "The Devil Is in the Details" —
@@ -305,8 +310,6 @@ class MetadataState:
             await db.commit()
         except Exception as e:
             logger.warning("Failed to save history: %s", e)
-        finally:
-            await db.close()
 
 
 def _rds_similar(a: Optional[str], b: Optional[str], threshold: float = 0.82) -> bool:
@@ -346,7 +349,3 @@ def _parse_rt(rt: str) -> tuple[Optional[str], Optional[str]]:
         if len(artist) >= 3:
             return artist or None, title or None
     return None, rt or None
-
-
-# Module-level singleton
-state = MetadataState()

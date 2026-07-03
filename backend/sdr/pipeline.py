@@ -113,6 +113,10 @@ class RadioPipeline:
         self._demod = None
         self._rds   = None
 
+    def set_squelch(self, threshold: float):
+        """IQ RMS below which audio is muted; 0 disables squelch."""
+        self._squelch_iq = max(0.0, float(threshold))
+
     async def retune(self, freq_hz: float):
         """Change frequency within the same band without full restart."""
         if self._band == "fm" and self._sdr is not None:

@@ -18,6 +18,11 @@ recordings:
   # Directory where recordings are saved
   output_dir: "~/recordings"
 
+# Uncomment to store the SQLite database (presets, history, recordings)
+# somewhere other than the repository root:
+# database:
+#   path: "~/.local/share/squelch/squelch.db"
+
 # Icecast2 secondary output (optional — requires a running Icecast server;
 # see config/icecast.xml.example). Pushes the same AAC stream to an Icecast
 # mount and updates now-playing metadata from RDS/HD Radio.

@@ -31,7 +31,7 @@ class FakeRadio:
 
 
 @pytest.fixture
-def recorder(tmp_db, tmp_path):
+async def recorder(tmp_db, tmp_path):
     rec = Recorder({"recordings": {"output_dir": str(tmp_path)}}, MetadataState())
     rec.set_streaming(FakeStreams())
     return rec

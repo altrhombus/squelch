@@ -21,9 +21,9 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from .metadata import ART_DIR as _ART_DIR
 
-_ART_DIR = "/tmp/sdr-art"
+logger = logging.getLogger(__name__)
 
 # In-memory cache: (artist, title) -> {"art_path": str, "apple_music_url": str} | None
 _cache: dict[tuple[str, str], Optional[dict]] = {}

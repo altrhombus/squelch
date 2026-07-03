@@ -8,6 +8,12 @@ All notable changes to Squelch are documented here. The format follows
 
 ### Changed
 
+- Internal restructuring: API endpoints split into per-domain routers
+  (`backend/routes/`), app singletons moved into the lifespan
+  (`backend/context.py`), one shared SQLite connection (WAL mode, indexed
+  history) instead of per-request connections, atomic cover-art writes,
+  and a configurable database path (`database.path` in settings.yaml).
+  No changes to the HTTP API.
 - **License: GPL-2.0 → GPL-3.0-or-later.** The previous bare GPLv2 text had
   no copyright notice and was incompatible with pyrtlsdr (GPLv3), which
   Squelch imports as a library. All code to date is by the sole author, so

@@ -94,20 +94,17 @@ class Recorder:
         self._rec_file       = open(out_file, "wb")
 
         db = await get_db()
-        try:
-            cur = await db.execute(
-                """INSERT INTO recordings
-                       (filename, station_name, artist, title, frequency, band, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (os.path.basename(out_file), self._meta.station_name,
-                 self._meta.artist, self._meta.title,
-                 self._meta.frequency, self._meta.band,
-                 self._rec_start.isoformat()),
-            )
-            await db.commit()
-            self._rec_id = cur.lastrowid
-        finally:
-            await db.close()
+        cur = await db.execute(
+            """INSERT INTO recordings
+                   (filename, station_name, artist, title, frequency, band, started_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (os.path.basename(out_file), self._meta.station_name,
+             self._meta.artist, self._meta.title,
+             self._meta.frequency, self._meta.band,
+             self._rec_start.isoformat()),
+        )
+        await db.commit()
+        self._rec_id = cur.lastrowid
 
         self._rec_task = asyncio.create_task(self._write_loop())
         logger.info("Recording to: %s", out_file)
@@ -144,14 +141,11 @@ class Recorder:
 
         if self._rec_id:
             db = await get_db()
-            try:
-                await db.execute(
-                    "UPDATE recordings SET ended_at=?, duration_seconds=? WHERE id=?",
-                    (ended_at.isoformat(), duration, self._rec_id),
-                )
-                await db.commit()
-            finally:
-                await db.close()
+            await db.execute(
+                "UPDATE recordings SET ended_at=?, duration_seconds=? WHERE id=?",
+                (ended_at.isoformat(), duration, self._rec_id),
+            )
+            await db.commit()
 
         result = {
             "status": "stopped",
@@ -163,6 +157,15 @@ class Recorder:
 
     def is_recording(self) -> bool:
         return self._rec_task is not None and not self._rec_task.done()
+
+    def status(self) -> dict:
+        result = {
+            "recording": self.is_recording(),
+            "file": self._recording_file and os.path.basename(self._recording_file),
+        }
+        if self.is_recording() and self._rec_start is not None:
+            result["started_at"] = self._rec_start.timestamp()
+        return result
 
     async def _write_loop(self):
         # No timeout: a recording survives stream stalls and retune drains,
@@ -183,27 +186,21 @@ class Recorder:
 
     async def list_recordings(self) -> list[dict]:
         db = await get_db()
-        try:
-            async with db.execute("SELECT * FROM recordings ORDER BY started_at DESC") as cur:
-                return [dict(r) for r in await cur.fetchall()]
-        finally:
-            await db.close()
+        async with db.execute("SELECT * FROM recordings ORDER BY started_at DESC") as cur:
+            return [dict(r) for r in await cur.fetchall()]
 
     async def delete_recording(self, recording_id: int) -> bool:
         db = await get_db()
-        try:
-            async with db.execute("SELECT filename FROM recordings WHERE id=?", (recording_id,)) as cur:
-                row = await cur.fetchone()
-            if not row:
-                return False
-            path = os.path.join(os.path.expanduser(self._output_dir), row["filename"])
-            if os.path.exists(path):
-                os.remove(path)
-            await db.execute("DELETE FROM recordings WHERE id=?", (recording_id,))
-            await db.commit()
-            return True
-        finally:
-            await db.close()
+        async with db.execute("SELECT filename FROM recordings WHERE id=?", (recording_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return False
+        path = os.path.join(os.path.expanduser(self._output_dir), row["filename"])
+        if os.path.exists(path):
+            os.remove(path)
+        await db.execute("DELETE FROM recordings WHERE id=?", (recording_id,))
+        await db.commit()
+        return True
 
     # ------------------------------------------------------------------
     # Scheduled recordings
@@ -211,13 +208,10 @@ class Recorder:
 
     async def _load_scheduled_recordings(self):
         db = await get_db()
-        try:
-            async with db.execute("SELECT * FROM scheduled_recordings WHERE enabled=1") as cur:
-                rows = await cur.fetchall()
-            for row in rows:
-                self._add_scheduled_job(dict(row))
-        finally:
-            await db.close()
+        async with db.execute("SELECT * FROM scheduled_recordings WHERE enabled=1") as cur:
+            rows = await cur.fetchall()
+        for row in rows:
+            self._add_scheduled_job(dict(row))
 
     def _add_scheduled_job(self, sched: dict):
         from apscheduler.triggers.cron import CronTrigger
@@ -262,34 +256,25 @@ class Recorder:
 
     async def create_scheduled_recording(self, data: dict) -> dict:
         db = await get_db()
-        try:
-            cur = await db.execute(
-                """INSERT INTO scheduled_recordings
-                   (name, frequency, band, duration_seconds, cron_expr)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (data["name"], data["frequency"], data["band"],
-                 data["duration_seconds"], data["cron_expr"]),
-            )
-            await db.commit()
-            row_id = cur.lastrowid
-        finally:
-            await db.close()
-        db = await get_db()
-        try:
-            async with db.execute("SELECT * FROM scheduled_recordings WHERE id=?", (row_id,)) as cur:
-                sched = dict(await cur.fetchone())
-        finally:
-            await db.close()
+        cur = await db.execute(
+            """INSERT INTO scheduled_recordings
+               (name, frequency, band, duration_seconds, cron_expr)
+               VALUES (?, ?, ?, ?, ?)""",
+            (data["name"], data["frequency"], data["band"],
+             data["duration_seconds"], data["cron_expr"]),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT * FROM scheduled_recordings WHERE id=?", (cur.lastrowid,)
+        ) as row_cur:
+            sched = dict(await row_cur.fetchone())
         self._add_scheduled_job(sched)
         return sched
 
     async def list_scheduled_recordings(self) -> list[dict]:
         db = await get_db()
-        try:
-            async with db.execute("SELECT * FROM scheduled_recordings ORDER BY id") as cur:
-                return [dict(r) for r in await cur.fetchall()]
-        finally:
-            await db.close()
+        async with db.execute("SELECT * FROM scheduled_recordings ORDER BY id") as cur:
+            return [dict(r) for r in await cur.fetchall()]
 
     async def delete_scheduled_recording(self, sched_id: int) -> bool:
         try:
@@ -297,9 +282,6 @@ class Recorder:
         except Exception:
             pass   # job may not exist (disabled schedule)
         db = await get_db()
-        try:
-            cur = await db.execute("DELETE FROM scheduled_recordings WHERE id=?", (sched_id,))
-            await db.commit()
-            return cur.rowcount > 0
-        finally:
-            await db.close()
+        cur = await db.execute("DELETE FROM scheduled_recordings WHERE id=?", (sched_id,))
+        await db.commit()
+        return cur.rowcount > 0
