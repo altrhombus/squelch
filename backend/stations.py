@@ -8,7 +8,6 @@ class PresetCreate(BaseModel):
     frequency: float
     band: str
     gain: str = "auto"
-    bandwidth: str = "wide"
     stereo_mode: str = "auto"
 
 
@@ -17,7 +16,6 @@ class PresetUpdate(BaseModel):
     frequency: Optional[float] = None
     band: Optional[str] = None
     gain: Optional[str] = None
-    bandwidth: Optional[str] = None
     stereo_mode: Optional[str] = None
 
 
@@ -49,9 +47,9 @@ async def create_preset(p: PresetCreate) -> dict:
     db = await get_db()
     try:
         cur = await db.execute(
-            """INSERT INTO presets (name, frequency, band, gain, bandwidth, stereo_mode)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (p.name, p.frequency, p.band, p.gain, p.bandwidth, p.stereo_mode),
+            """INSERT INTO presets (name, frequency, band, gain, stereo_mode)
+               VALUES (?, ?, ?, ?, ?)""",
+            (p.name, p.frequency, p.band, p.gain, p.stereo_mode),
         )
         await db.commit()
         return await get_preset(cur.lastrowid)

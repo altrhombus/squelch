@@ -10,6 +10,7 @@ A self-hosted SDR radio streamer for the Raspberry Pi. Tune FM (stereo), AM, HD 
 - **HD Radio** — full NRSC-5 decode including cover art and rich metadata
 - **AirPlay** — tap the AirPlay button in Safari to route audio to any AirPlay target
 - **Recording** — one-tap recording, auto-named from station metadata
+- **Icecast output** (optional) — push the stream to an Icecast mount with live now-playing metadata for VLC/Sonos-style clients
 - **Web UI** — no SDR jargon exposed; just stations, a dial, and a play button
 
 ---
@@ -48,8 +49,8 @@ nano config/settings.yaml
 # 4. Start the service
 sudo systemctl start squelch
 
-# 5. Open in browser (replace with your Pi's IP or hostname)
-open http://squelch.local:8000
+# 5. Open http://squelch.local:8000 in a browser
+#    (replace with your Pi's IP or hostname)
 ```
 
 ### Manual (without the install script)
@@ -105,6 +106,22 @@ default_presets:
     frequency: 91.1
     band: fm
 ```
+
+### Icecast output (optional)
+
+Squelch can push the same AAC stream to an Icecast2 mount, including live now-playing metadata from RDS/HD Radio (so players like VLC show artist/title). Install and start Icecast (`sudo apt-get install icecast2` — a starter config is provided at `config/icecast.xml.example`), then enable it in `settings.yaml`:
+
+```yaml
+icecast:
+  enabled: true
+  host: "localhost"
+  port: 8001
+  source_password: "changeme"   # must match <source-password> in icecast.xml
+  mount: "/radio"
+  keep_alive: false
+```
+
+With `keep_alive: false` (the default) the mount is only live while someone is listening or recording, so the Pi's DSP idle-suspend keeps working. Set it to `true` to keep the mount up whenever a station is tuned — Icecast clients can then connect at any time, at the cost of the DSP running continuously.
 
 ---
 
@@ -200,7 +217,7 @@ All constants below are in `backend/sdr/fm.py` (module-level) or `backend/sdr/pi
 | `_PHYS_SCALE` | `200.0` | Converts discriminator noise RMS² to per-STFT-bin power for the physics floor. Analytical value is 307; 200 is conservative. | Raise toward `250` if the floor seems too weak on very noisy stations. Lower toward `150` if over-subtraction artefacts appear. |
 | `_MINSTAT_FRAMES` | `128` | Length of MinStat circular buffer (128 × 10.7 ms ≈ 1.4 s of history). | Don't raise above `256` — the axis=0 min scan cost was the source of USB callback overflows at 256. Lower reduces memory but makes the estimate noisier. |
 | `alpha_dd` | `0.92` | Decision-directed Wiener smoother time constant (τ ≈ 250 ms). Lower = faster gain response. | Lower toward `0.88` if the Wiener sounds sluggish on transients. Don't go below `0.88` — sibilant offset artefacts appear (tested). |
-| `_WIENER_FLOOR` | `0.24` | Minimum per-bin Wiener gain (−12 dB floor). Prevents inter-formant bins from collapsing to near-zero, which causes a "watery" voice quality on weak stations. | Raise toward `0.30` if voices still sound watery (less noise reduction, less modulation). Lower toward `0.10` for more aggressive noise removal on moderate stations. |
+| `_WIENER_FLOOR` | `0.24` | Weak-signal minimum per-bin Wiener gain (−12 dB). The floor adapts with signal quality: it slides from this value at blend=0 down to `_WIENER_FLOOR_STRONG` (`0.10`, −20 dB) at blend=1. Prevents inter-formant bins from collapsing to near-zero, which causes a "watery" voice quality on weak stations. | Raise toward `0.30` if voices still sound watery (less noise reduction, less modulation). Lower `_WIENER_FLOOR_STRONG` for more residual-noise suppression on strong stations. |
 
 ### Stereo blend
 
@@ -227,7 +244,7 @@ These are in `backend/sdr/pipeline.py`.
 | `_IQ_RMS_LO` | `0.07` | IQ RMS floor — gain steps up when below this. | Raise slightly if the controller keeps stepping up gain unnecessarily on a marginal signal. |
 | `_IQ_RMS_HI` | `0.38` | IQ RMS ceiling — gain steps down when above this (ADC saturation risk). | Lower if you hear clipping on very strong local stations. |
 | `_NOISE_RATIO_MAX` | `2.0` | noise_rms / pilot_rms above which the controller steps gain down for SNR quality. | Lower toward `1.5` if the controller doesn't back off gain on noisy marginal stations. |
-| `_GAIN_HOLD_BLOCKS` | `50` | Minimum blocks (~5.5 s) between gain steps. | Raise if gain is hunting (stepping up and down frequently). |
+| `_GAIN_HOLD_BLOCKS` | `25` | Minimum blocks (~5 s at 218 ms/block) between gain steps. | Raise if gain is hunting (stepping up and down frequently). |
 
 ---
 
@@ -241,6 +258,29 @@ These are in `backend/sdr/pipeline.py`.
 | Audio encoding | PyAV (AAC-LC, 128 kbps stereo / 48 kbps mono, ADTS) |
 | Database | SQLite via aiosqlite (presets, history, recordings) |
 | Frontend | Vanilla JS + CSS (no build step) |
+
+## Architecture
+
+```
+RTL-SDR ──USB──▶ pyrtlsdr async stream (1.2 MHz IQ, ~218 ms blocks)
+                     │
+                     ▼  DSP thread (numpy/scipy)
+       FM stereo / AM / NFM demodulation
+       Wiener NR · stereo blend · de-emphasis · AGC · limiter
+                     │                    │
+          composite tap (240 kHz)         ▼
+                     │            AAC-LC encoder (PyAV, ADTS)
+                     ▼                    │
+          RDS decoder thread              ▼
+                     │           StreamingManager (per-client queues)
+                     ▼               ├──▶ GET /stream   (browsers, AVPlayer, AirPlay)
+              MetadataState          ├──▶ Recorder      (.aac files + SQLite)
+                     │               └──▶ IcecastPusher (optional mount)
+                     ▼
+              WebSocket /ws  (metadata, signal, diagnostics)
+
+HD Radio: nrsc5 subprocess ──PCM pipe──▶ resample 44.1→48 kHz ──▶ same encoder path
+```
 
 ---
 
@@ -280,7 +320,7 @@ Squelch is designed for a **trusted home LAN** and has **no authentication** —
 
 ## Troubleshooting
 
-**`extra callback data lost` in logs / audio dropouts**: The DSP thread is taking longer than the ~109 ms block interval. Likely causes: Pi is thermally throttling (check `vcgencmd measure_temp`), or an inadequate USB power supply. Adding a heatsink and ensuring a quality USB-C supply (≥ 3 A) usually resolves this.
+**`extra callback data lost` in logs / audio dropouts**: The DSP thread is taking longer than the ~218 ms block interval. Likely causes: Pi is thermally throttling (check `vcgencmd measure_temp`), or an inadequate USB power supply. Adding a heatsink and ensuring a quality USB-C supply (≥ 3 A) usually resolves this.
 
 **`rtl_sdr: error -3 (no device found)`**: The kernel DVB driver is loaded and has claimed the device. Run:
 ```bash

@@ -4,6 +4,25 @@ All notable changes to Squelch are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Icecast2 output: pushes the AAC stream to an Icecast mount with live
+  now-playing metadata from RDS/HD Radio. `icecast.keep_alive` controls
+  whether the mount stays live only while listeners are active (default,
+  preserves DSP idle-suspend) or whenever a station is tuned.
+
+### Removed
+
+- Dead config keys that were never read (`audio:` section,
+  `recordings.default_bitrate`) and the unused `bandwidth` API parameter
+
+### Fixed
+
+- README DSP tuning reference brought back in sync with the code
+  (`_GAIN_HOLD_BLOCKS`, block interval, adaptive Wiener floor)
+
 ## [0.1.0] — 2026-07-02
 
 First tagged release.

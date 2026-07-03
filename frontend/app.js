@@ -1089,7 +1089,6 @@ async function saveCurrentPreset(name) {
     frequency:   currentFreq,
     band:        currentBand,
     gain:        "auto",
-    bandwidth:   "wide",
     stereo_mode: "auto",
   });
   loadPresets();

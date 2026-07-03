@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 ART_DIR = "/tmp/sdr-art"
 ART_PATH = os.path.join(ART_DIR, "current.jpg")
-PLACEHOLDER_ART = os.path.join(os.path.dirname(__file__), "..", "frontend", "placeholder.jpg")
 
 
 class MetadataState:
