@@ -320,7 +320,18 @@ class RdsDecoder:
             seg       = b & 0x3
             char0     = chr((d >> 8) & 0xFF)
             char1     = chr(d & 0xFF)
-            self._ps_chars[seg] = (char0, char1)
+            # Segments must arrive in transmission order (0,1,2,3) with no
+            # gaps, and the buffer is cleared after every emission.  Dynamic-PS
+            # stations replace the whole message every ~1 s; the old
+            # accumulate-and-overwrite approach emitted a hybrid of 3 stale +
+            # 1 fresh segment on every group after the first fill, flooding
+            # the downstream page reassembler with frankenpages.
+            if seg == 0:
+                self._ps_chars = {0: (char0, char1)}
+            elif len(self._ps_chars) == seg:
+                self._ps_chars[seg] = (char0, char1)
+            else:
+                self._ps_chars.clear()   # out-of-order — restart the run
             if len(self._ps_chars) == 4:
                 # Deliver the raw 8 characters unstripped — stations that page
                 # song text through PS rely on the space padding for word
@@ -329,13 +340,11 @@ class RdsDecoder:
                     self._ps_chars[s][0] + self._ps_chars[s][1]
                     for s in range(4)
                 )
+                self._ps_chars.clear()
                 # Reject PS strings with non-printable characters — these are
                 # almost always bit errors.  RDS PS uses printable ASCII only.
                 if ps.strip() and all(0x20 <= ord(c) < 0x7F for c in ps):
                     update["ps"] = ps
-                else:
-                    # Partial corruption — discard and keep searching
-                    self._ps_chars.clear()
 
         elif group_type == 2 and b0 == 0:   # Group 2A — RadioText (64 chars)
             seg    = b & 0xF
