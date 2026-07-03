@@ -50,9 +50,13 @@ class Recorder:
         self._rec_id:     Optional[int]           = None
         self._recording_file: Optional[str]       = None
         self._scheduler:  Optional[AsyncIOScheduler] = None
+        self._radio       = None                # RadioManager (injected later)
 
     def set_streaming(self, streaming):
         self._streams = streaming
+
+    def set_radio(self, radio):
+        self._radio = radio
 
     async def startup(self):
         os.makedirs(os.path.expanduser(self._output_dir), exist_ok=True)
@@ -75,7 +79,15 @@ class Recorder:
         if not self._streams:
             return {"error": "streaming not available"}
 
-        out_file = filename or _auto_filename(self._meta, self._output_dir)
+        if filename:
+            # Basename + pin to output_dir — a client-supplied filename must not
+            # be able to write outside the recordings directory.
+            safe = os.path.basename(filename.strip())
+            if not safe or safe.startswith("."):
+                return {"error": "invalid filename"}
+            out_file = os.path.join(os.path.expanduser(self._output_dir), safe)
+        else:
+            out_file = _auto_filename(self._meta, self._output_dir)
         self._recording_file = out_file
         self._rec_start      = datetime.now(timezone.utc)
         self._rec_queue      = self._streams.new_client()
@@ -106,15 +118,18 @@ class Recorder:
         }
 
     async def stop(self) -> dict:
-        if not self._rec_task or self._rec_task.done():
+        # Clean up even if the write task already died on its own — the open
+        # file handle and DB row must not be left dangling.
+        if not self._rec_task and not self._rec_file:
             return {"error": "not recording"}
 
-        self._rec_task.cancel()
-        try:
-            await self._rec_task
-        except asyncio.CancelledError:
-            pass
-        self._rec_task = None
+        if self._rec_task:
+            self._rec_task.cancel()
+            try:
+                await self._rec_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._rec_task = None
 
         if self._streams and self._rec_queue:
             self._streams.remove_client(self._rec_queue)
@@ -150,13 +165,13 @@ class Recorder:
         return self._rec_task is not None and not self._rec_task.done()
 
     async def _write_loop(self):
+        # No timeout: a recording survives stream stalls and retune drains,
+        # and ends only when stop() cancels this task.
         try:
             while True:
-                chunk = await asyncio.wait_for(self._rec_queue.get(), timeout=10.0)
+                chunk = await self._rec_queue.get()
                 if self._rec_file and chunk:
                     self._rec_file.write(chunk)
-        except asyncio.TimeoutError:
-            pass
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -208,14 +223,42 @@ class Recorder:
         from apscheduler.triggers.cron import CronTrigger
 
         async def job():
-            await self.start()
-            await asyncio.sleep(sched["duration_seconds"])
-            await self.stop()
+            await self._run_scheduled(sched)
 
         self._scheduler.add_job(
             job, CronTrigger.from_crontab(sched["cron_expr"]),
             id=f"sched_{sched['id']}", replace_existing=True,
         )
+
+    async def _run_scheduled(self, sched: dict):
+        if self.is_recording():
+            logger.warning("Scheduled recording %r skipped — already recording", sched["name"])
+            return
+        if not self._radio:
+            logger.warning("Scheduled recording %r skipped — radio not available", sched["name"])
+            return
+
+        band    = sched["band"]
+        # frequency is stored in display units (MHz, or kHz for AM) like presets
+        freq_hz = sched["frequency"] * (1e3 if band == "am" else 1e6)
+        prev    = self._radio.status()   # station to restore afterwards
+
+        logger.info("Scheduled recording %r: tuning %.4g %s [%s] for %ds",
+                    sched["name"], sched["frequency"],
+                    "kHz" if band == "am" else "MHz", band,
+                    sched["duration_seconds"])
+        await self._radio.tune(freq_hz, band)
+        await asyncio.sleep(2)   # let the gain controller settle before capture
+
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        await self.start(f"{ts}_{_safe_name(sched['name'])}.aac")
+        try:
+            await asyncio.sleep(sched["duration_seconds"])
+        finally:
+            await self.stop()
+
+        if prev["frequency"] and (prev["frequency"], prev["band"]) != (freq_hz, band):
+            await self._radio.tune(prev["frequency"], prev["band"])
 
     async def create_scheduled_recording(self, data: dict) -> dict:
         db = await get_db()
@@ -239,3 +282,24 @@ class Recorder:
             await db.close()
         self._add_scheduled_job(sched)
         return sched
+
+    async def list_scheduled_recordings(self) -> list[dict]:
+        db = await get_db()
+        try:
+            async with db.execute("SELECT * FROM scheduled_recordings ORDER BY id") as cur:
+                return [dict(r) for r in await cur.fetchall()]
+        finally:
+            await db.close()
+
+    async def delete_scheduled_recording(self, sched_id: int) -> bool:
+        try:
+            self._scheduler.remove_job(f"sched_{sched_id}")
+        except Exception:
+            pass   # job may not exist (disabled schedule)
+        db = await get_db()
+        try:
+            cur = await db.execute("DELETE FROM scheduled_recordings WHERE id=?", (sched_id,))
+            await db.commit()
+            return cur.rowcount > 0
+        finally:
+            await db.close()

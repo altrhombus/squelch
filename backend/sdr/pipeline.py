@@ -237,6 +237,9 @@ class RadioPipeline:
             raise
         except Exception as e:
             logger.exception("SDR stream error: %s", e)
+            # Push an error state so clients don't show "Buffering…" forever
+            self._meta.update_state("error")
+            await self._meta.broadcast()
         finally:
             try:
                 await sdr.stop()

@@ -127,10 +127,29 @@ The backend exposes a REST API (full docs at `http://your-pi:8000/docs`):
 | `GET` | `/recordings` | List recordings |
 | `DELETE` | `/recordings/{id}` | Delete a recording |
 | `GET` | `/recordings/{id}/download` | Download recording |
+| `GET` | `/schedules` | List scheduled recordings |
+| `POST` | `/schedules` | Create a scheduled recording (see below) |
+| `DELETE` | `/schedules/{id}` | Delete a scheduled recording |
 | `GET` | `/history` | Recently played (last 100) |
 | `DELETE` | `/history/{id}` | Delete a history entry |
 | `DELETE` | `/history` | Clear all history |
 | `POST` | `/squelch` | Set squelch threshold (0–100) |
+
+### Scheduled recordings
+
+Recordings can run automatically on a cron schedule (API only — no UI yet):
+
+```bash
+curl -X POST http://squelch.local:8000/schedules -H 'Content-Type: application/json' -d '{
+  "name": "Morning Show",
+  "frequency": 91.1,
+  "band": "fm",
+  "duration_seconds": 3600,
+  "cron_expr": "0 9 * * 1-5"
+}'
+```
+
+At each trigger, Squelch tunes to the station, records for the duration, then restores whatever was previously tuned. `frequency` uses the same units as presets (MHz; kHz for AM), and `cron_expr` is a standard 5-field crontab expression.
 
 ### iOS / iPadOS integration
 
@@ -228,8 +247,18 @@ These are in `backend/sdr/pipeline.py`.
 - [ ] AirPlay push from Pi (`owntone`)
 - [ ] Home Assistant MQTT integration
 - [ ] Native iOS/iPadOS app (SwiftUI + AVPlayer)
-- [ ] Scheduled recordings
+- [x] Scheduled recordings (REST API; no UI yet)
 - [ ] Spectrum waterfall display
+
+---
+
+## Security
+
+Squelch is designed for a **trusted home LAN** and has **no authentication** — anyone who can reach the port can tune the radio, start/stop recordings, and delete presets, recordings, and history.
+
+- **Do not port-forward Squelch to the internet.** For remote access, use a VPN (WireGuard, Tailscale) or put it behind a reverse proxy that adds authentication (e.g. Caddy/nginx with basic auth — note the `<audio>` stream and WebSocket must pass through too).
+- The server binds to `0.0.0.0` by default so other devices on your network can reach it; set `server.host` in `settings.yaml` to restrict this.
+- Optional cover-art lookup sends the currently playing artist/title to Apple's iTunes Search API.
 
 ---
 

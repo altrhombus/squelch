@@ -70,6 +70,7 @@ async def lifespan(app: FastAPI):
     radio    = RadioManager(config, meta, streams)
     recorder = Recorder(config, meta)
     recorder.set_streaming(streams)
+    recorder.set_radio(radio)
 
     await radio.startup()
     await recorder.startup()
@@ -166,8 +167,27 @@ async def tune(req: TuneRequest):
     if req.stereo_mode is not None: kwargs["stereo_mode"] = req.stereo_mode
     if req.hd_channel  is not None: kwargs["hd_channel"] = req.hd_channel
 
-    asyncio.create_task(radio.tune(freq_hz, band, **kwargs))
+    _spawn_bg(radio.tune(freq_hz, band, **kwargs))
     return {"status": "tuning", "frequency": req.frequency, "band": band}
+
+
+# Keep references to fire-and-forget tasks — asyncio only holds weak refs, so
+# an unreferenced task can be garbage-collected mid-flight. The done callback
+# also surfaces exceptions that would otherwise be silently dropped.
+_bg_tasks: set = set()
+
+
+def _spawn_bg(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_done)
+    return task
+
+
+def _bg_done(task: asyncio.Task):
+    _bg_tasks.discard(task)
+    if not task.cancelled() and task.exception():
+        logger.error("Background task failed", exc_info=task.exception())
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +310,49 @@ async def download_recording(recording_id: int):
     if not os.path.exists(path):
         raise HTTPException(404, "File not found on disk")
     return FileResponse(path, media_type="audio/mp4", filename=rec["filename"])
+
+
+# ---------------------------------------------------------------------------
+# Scheduled recordings
+# ---------------------------------------------------------------------------
+
+class ScheduleCreate(BaseModel):
+    name:             str
+    frequency:        float   # display units: MHz (kHz for AM), same as presets
+    band:             str
+    duration_seconds: int
+    cron_expr:        str     # standard 5-field crontab expression
+
+
+@app.get("/schedules")
+async def get_schedules():
+    return await recorder.list_scheduled_recordings()
+
+
+@app.post("/schedules", status_code=201)
+async def post_schedule(req: ScheduleCreate):
+    if req.band.lower() not in ("fm", "am", "scanner", "hd", "wx"):
+        raise HTTPException(400, "band must be fm, am, scanner, hd, or wx")
+    if req.duration_seconds <= 0:
+        raise HTTPException(400, "duration_seconds must be positive")
+    from apscheduler.triggers.cron import CronTrigger
+    try:
+        CronTrigger.from_crontab(req.cron_expr)
+    except ValueError as e:
+        raise HTTPException(400, f"invalid cron expression: {e}")
+    return await recorder.create_scheduled_recording({
+        "name":             req.name,
+        "frequency":        req.frequency,
+        "band":             req.band.lower(),
+        "duration_seconds": req.duration_seconds,
+        "cron_expr":        req.cron_expr,
+    })
+
+
+@app.delete("/schedules/{schedule_id}", status_code=204)
+async def delete_schedule(schedule_id: int):
+    if not await recorder.delete_scheduled_recording(schedule_id):
+        raise HTTPException(404, "Schedule not found")
 
 
 # ---------------------------------------------------------------------------

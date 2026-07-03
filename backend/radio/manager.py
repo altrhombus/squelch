@@ -54,6 +54,7 @@ class RadioManager:
         self._signal_task: Optional[asyncio.Task] = None
         self._current_freq: Optional[float] = None
         self._current_band: Optional[str]   = None
+        self._tune_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -63,6 +64,12 @@ class RadioManager:
         pass  # nothing to pre-create
 
     async def tune(self, freq_hz: float, band: str, **kwargs):
+        # Serialize tunes — rapid successive requests must not interleave
+        # _stop_all() with a concurrent pipeline start.
+        async with self._tune_lock:
+            await self._tune_locked(freq_hz, band, **kwargs)
+
+    async def _tune_locked(self, freq_hz: float, band: str, **kwargs):
         gain         = kwargs.get("gain", self._cfg.get("sdr", {}).get("gain", "auto"))
         deemph       = kwargs.get("deemphasis_us", self._deemphasis)
         stereo_mode  = kwargs.get("stereo_mode", "auto")
@@ -109,7 +116,8 @@ class RadioManager:
         logger.info("Squelch threshold: %.3f (slider=%d)", threshold, slider)
 
     async def stop(self):
-        await self._stop_all()
+        async with self._tune_lock:
+            await self._stop_all()
         if self._signal_task:
             self._signal_task.cancel()
             self._signal_task = None

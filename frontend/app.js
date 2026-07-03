@@ -480,6 +480,7 @@ function applyMeta(m) {
       tuning:    "Tuning…",
       buffering: "Buffering…",
       live:      m.band === "fm" || m.band === "hd" ? "Waiting for RDS…" : "Live",
+      error:     "Radio error — try retuning",
     }[m.state] || "";
     elTrackArtist.textContent = "";
     elTrackArtist.classList.add("hidden");
