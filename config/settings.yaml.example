@@ -4,14 +4,6 @@ server:
   host: "0.0.0.0"
   port: 8000
 
-audio:
-  # Output sample rate for all bands (Hz). 48000 decimates cleanly from 2.4 MHz.
-  output_rate: 48000
-  # AAC bitrate for stereo streams (FM / HD Radio), kbps
-  mp3_bitrate_stereo: 96
-  # AAC bitrate for mono streams (AM / scanner), kbps
-  mp3_bitrate_mono: 48
-
 sdr:
   # RTL-SDR device index (0 = first dongle)
   device_index: 0
@@ -25,16 +17,21 @@ sdr:
 recordings:
   # Directory where recordings are saved
   output_dir: "~/recordings"
-  # Default audio quality for recordings: 64, 128, or 192 (kbps)
-  default_bitrate: 128
 
-# Icecast2 secondary output (optional — requires icecast2 installed and running)
+# Icecast2 secondary output (optional — requires a running Icecast server;
+# see config/icecast.xml.example). Pushes the same AAC stream to an Icecast
+# mount and updates now-playing metadata from RDS/HD Radio.
 icecast:
   enabled: false
   host: "localhost"
   port: 8001
   source_password: "changeme"
   mount: "/radio"
+  # false (default): connect only while someone is listening or recording,
+  #   preserving DSP idle-suspend — the mount disappears while Squelch is idle.
+  # true: keep the mount live whenever a station is tuned; the Pi runs the
+  #   DSP continuously even with no listeners (more CPU/heat).
+  keep_alive: false
 
 # Default station presets loaded on first run (can be edited in the UI)
 default_presets:

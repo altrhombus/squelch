@@ -132,14 +132,22 @@ class StreamingManager:
 
     def __init__(self):
         self._clients: set[asyncio.Queue] = set()
+        # Passive subscribers (e.g. the Icecast pusher in on-demand mode)
+        # receive broadcast chunks but do not count as listeners: they never
+        # set the active event or block the idle countdown, so they cannot
+        # keep the DSP running on their own.
+        self._passive: set[asyncio.Queue] = set()
         # Set when at least one client is connected; cleared after IDLE_GRACE_SECS
         # with no clients.  pipeline.py awaits this before dispatching to the DSP
         # executor so all demodulation / encoding is suspended while idle.
         self._active_event: asyncio.Event = asyncio.Event()
         self._idle_task: Optional[asyncio.Task] = None
 
-    def new_client(self) -> asyncio.Queue:
+    def new_client(self, passive: bool = False) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=self.MAX_QUEUE)
+        if passive:
+            self._passive.add(q)
+            return q
         self._clients.add(q)
         # Cancel any pending idle countdown and immediately mark DSP as needed.
         if self._idle_task and not self._idle_task.done():
@@ -150,6 +158,9 @@ class StreamingManager:
         return q
 
     def remove_client(self, q: asyncio.Queue):
+        if q in self._passive:
+            self._passive.discard(q)
+            return
         self._clients.discard(q)
         logger.debug("Audio client disconnected (%d total)", len(self._clients))
         if not self._clients and not (self._idle_task and not self._idle_task.done()):
@@ -171,10 +182,10 @@ class StreamingManager:
         return self._active_event.is_set()
 
     def broadcast(self, chunk: bytes):
-        if not chunk or not self._clients:
+        if not chunk or not (self._clients or self._passive):
             return
         dead: set = set()
-        for q in self._clients:
+        for q in self._clients | self._passive:
             try:
                 q.put_nowait(chunk)
             except asyncio.QueueFull:
@@ -182,10 +193,11 @@ class StreamingManager:
             except Exception:
                 dead.add(q)
         self._clients -= dead
+        self._passive -= dead
 
     def drain_all(self):
         """Flush all client queues on retune to prevent stale audio."""
-        for q in self._clients:
+        for q in self._clients | self._passive:
             while not q.empty():
                 try:
                     q.get_nowait()

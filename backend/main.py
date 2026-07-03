@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .db import init_db
+from .icecast import IcecastPusher
 from .metadata import state as meta
 from .radio.manager import RadioManager
 from .recorder import Recorder
@@ -57,11 +58,12 @@ config = _load_config()
 radio:    Optional[RadioManager]    = None
 recorder: Optional[Recorder]       = None
 streams:  Optional[StreamingManager] = None
+icecast:  Optional[IcecastPusher]  = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global radio, recorder, streams
+    global radio, recorder, streams, icecast
     await init_db()
 
     os.makedirs(_ART_DIR, exist_ok=True)
@@ -75,12 +77,19 @@ async def lifespan(app: FastAPI):
     await radio.startup()
     await recorder.startup()
 
+    ice_cfg = config.get("icecast") or {}
+    if ice_cfg.get("enabled"):
+        icecast = IcecastPusher(ice_cfg, meta, streams)
+        icecast.start()
+
     defaults = config.get("default_presets", [])
     if defaults:
         await seed_default_presets(defaults)
 
     yield
 
+    if icecast:
+        await icecast.stop()
     await radio.stop()
     await recorder.shutdown()
 
@@ -149,7 +158,6 @@ class TuneRequest(BaseModel):
     frequency:   float
     band:        str
     gain:        Optional[str] = None
-    bandwidth:   Optional[str] = None
     stereo_mode: Optional[str] = None
     hd_channel:  Optional[int] = None   # 1-based HD sub-channel (HD1=1, HD2=2, …)
 
