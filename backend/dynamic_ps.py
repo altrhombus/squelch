@@ -11,23 +11,28 @@ DynamicPsAssembler watches the stream of PS values and decides which regime
 the station is in:
 
   static  — PS unchanged for a while: it's a real station name.
-  dynamic — PS keeps changing: collect the raw 8-char pages (spaces intact —
-            they carry word boundaries), detect the cycle by the first page
-            repeating, and majority-vote each page position across cycles to
-            reject the bit-flipped pages RDS regularly produces.
+  dynamic — PS keeps changing: reconstruct the paged message.
 
-feed() must receive the *unstripped* 8-character PS.
+Reconstruction uses a successor graph rather than whole-cycle matching:
+every observed transition page_a → page_b adds evidence to an edge, and the
+message is recovered by walking the strongest loop in the graph.  This
+tolerates heavy page loss — on marginal signals whole pages vanish (a page
+only survives decoding if all four of its RDS segments arrive clean and
+in order), so complete cycles may *never* be observed, but the true edges
+still accumulate more evidence than the loss-induced skip edges.
+
+Corrupted pages appear as rarely-reinforced detours the walk ignores; the
+space padding in raw pages carries word boundaries, so feed() must receive
+the *unstripped* 8-character PS.
 """
 
 import time
-from collections import Counter
-from difflib import SequenceMatcher
 from typing import Optional
 
 
 class PsResult:
     """dynamic: PS is currently paging (not a station name).
-    text: newly completed reassembled message, or None."""
+    text: newly reconstructed message, or None."""
 
     __slots__ = ("dynamic", "text")
 
@@ -40,27 +45,30 @@ class DynamicPsAssembler:
     DYNAMIC_CHANGES = 3      # distinct PS changes inside WINDOW_SECS → dynamic
     WINDOW_SECS     = 20.0
     STATIC_SECS     = 15.0   # unchanged this long → back to static
-    MAX_PAGES       = 16     # give up on a cycle that never repeats its anchor
-    MAX_CYCLES      = 6      # voting history
-    VOTES           = 2      # observations required per page position
+    MAX_WALK        = 24     # bound on message length in pages
+    EDGE_CONFIDENT  = 2      # evidence needed on every edge for a firm emit
+    PRUNE_SECS      = 60.0   # forget edges not reinforced within this window
+    NOVEL_RESET     = 3      # consecutive never-seen pages → message changed
+    DEBUG_PAGES     = 16     # raw pages kept for the diagnostics feed
 
     def __init__(self, clock=time.monotonic):
         self._clock = clock
         self.reset()
-
-    DEBUG_PAGES = 16   # raw pages kept for the diagnostics feed
 
     def reset(self):
         self._last_ps: Optional[str] = None
         self._last_change: float = 0.0
         self._change_times: list[float] = []
         self._dynamic = False
-        self._anchor: Optional[str] = None
-        self._current: list[str] = []
-        self._cycles: list[list[str]] = []
+        self._prev_page: Optional[str] = None
+        # successor graph: page_a -> page_b -> [count, last_seen]
+        self._edges: dict[str, dict[str, list]] = {}
         self._emitted: Optional[str] = None
         self._provisioned = False
+        self._novel_run = 0
         self._page_log: list[str] = []
+
+    # ------------------------------------------------------------------
 
     def feed(self, ps: str) -> PsResult:
         now = self._clock()
@@ -77,10 +85,8 @@ class DynamicPsAssembler:
 
         if not self._dynamic:
             if len(self._change_times) >= self.DYNAMIC_CHANGES:
-                # PS is cycling — switch to dynamic and start collecting
                 self._dynamic = True
-                self._anchor = ps
-                self._current = [ps]
+                self._prev_page = ps
             return PsResult(False)
 
         # Dynamic mode: a long-stable PS means the station went back to a name
@@ -92,93 +98,101 @@ class DynamicPsAssembler:
 
         text = None
         if changed:
-            # Fuzzy anchor matching tolerates a bit-flipped anchor page, but
-            # two legitimately different pages can also score similar (seen:
-            # 'Back In ' vs 'Black   ' at exactly 0.75) — so a fuzzy match
-            # needs a longer cycle to count, and only an exact close is
-            # trusted for provisional emission.
-            exact = ps == self._anchor
-            min_len = 2 if exact else 3
-            if len(self._current) >= min_len and (exact or self._similar(ps, self._anchor)):
-                self._cycles.append(self._current)
-                self._cycles = self._cycles[-self.MAX_CYCLES:]
-                self._current = [ps]
-                text = self._vote()
-                if text is None and exact:
-                    text = self._provisional(self._cycles[-1])
-            else:
-                # Not the anchor — but if it exactly matches a page already
-                # collected, the anchor is stale (the message changed under
-                # us): re-anchor there instead of waiting MAX_PAGES to give up.
-                match = next((i for i, p in enumerate(self._current[1:], 1)
-                              if ps == p), None)
-                if match is not None:
-                    cycle = self._current[match:]
-                    self._anchor = self._current[match]
-                    self._cycles = [cycle] if len(cycle) >= 2 else []
-                    self._current = [ps]
-                    self._provisioned = False
-                    if len(cycle) >= 2:
-                        text = self._provisional(cycle)
-                else:
-                    self._current.append(ps)
-                    if len(self._current) > self.MAX_PAGES:
-                        # Anchor never repeated and nothing re-anchored —
-                        # likely a corrupted anchor.  Start over from here.
-                        self._cycles.clear()
-                        self._provisioned = False
-                        self._anchor = ps
-                        self._current = [ps]
-
+            self._observe(ps, now)
+            text = self._extract()
         return PsResult(True, text)
 
-    def _provisional(self, cycle: list[str]) -> Optional[str]:
-        """Emit the first completed cycle immediately rather than waiting for
-        the vote — showing something in ~1 cycle (~10 s) beats a clean answer
-        in ~60 s.  Voting corrects the text a few cycles later if one of the
-        provisional pages was corrupted; downstream history dedup is fuzzy
-        for exactly this kind of near-duplicate correction."""
-        if self._provisioned:
-            return None
-        # Two alternating pages are usually a *fragment* of a longer message
-        # whose other pages were lost to decode errors (seen live: ' Tomatoe'/
-        # 's - Lucy' looping while 'Planting' never survived).  Too risky to
-        # show without voting.
-        if len(cycle) < 3:
-            return None
-        candidate = self._assemble(cycle)
-        if not candidate or candidate == self._emitted:
-            return None
-        self._provisioned = True
-        self._emitted = candidate
-        return candidate
+    # ------------------------------------------------------------------
 
-    def _vote(self) -> Optional[str]:
-        """Majority-vote pages across collected cycles; emit when every page
-        position has been observed identically at least VOTES times."""
-        lengths = Counter(len(c) for c in self._cycles)
-        modal_len, _ = lengths.most_common(1)[0]
-        candidates = [c for c in self._cycles if len(c) == modal_len]
-        if len(candidates) < self.VOTES:
+    def _observe(self, ps: str, now: float):
+        known = ps in self._edges or any(
+            ps in nbrs for nbrs in self._edges.values()
+        )
+
+        if self._prev_page is not None:
+            edge = self._edges.setdefault(self._prev_page, {}).setdefault(ps, [0, now])
+            edge[0] += 1
+            edge[1] = now
+        self._prev_page = ps
+
+        # Message-change detection: a run of never-seen pages after we've
+        # already emitted means the station moved on wholesale (new song).
+        # Drop the stale evidence and seed the graph with the novel chain so
+        # the new message can emit provisionally within ~one cycle.
+        if known:
+            self._novel_run = 0
+        else:
+            self._novel_run += 1
+            if self._emitted is not None and self._novel_run >= self.NOVEL_RESET:
+                seed = self._page_log[-self._novel_run:]
+                self._edges = {}
+                for a, b in zip(seed, seed[1:]):
+                    self._edges.setdefault(a, {})[b] = [1, now]
+                self._provisioned = False
+                self._novel_run = 0
+
+        # Age out edges that stopped being reinforced (old message remnants)
+        for a in list(self._edges):
+            nbrs = self._edges[a]
+            for b in list(nbrs):
+                if now - nbrs[b][1] > self.PRUNE_SECS:
+                    del nbrs[b]
+            if not nbrs:
+                del self._edges[a]
+
+    def _extract(self) -> Optional[str]:
+        """Walk the strongest successor loop and emit it if it clears the
+        evidence bar (or once provisionally, for responsiveness)."""
+        if not self._edges:
             return None
 
-        pages = []
-        for i in range(modal_len):
-            page, count = Counter(c[i] for c in candidates).most_common(1)[0]
-            if count < self.VOTES:
+        start = max(
+            self._edges,
+            key=lambda a: sum(c for c, _ in self._edges[a].values()),
+        )
+        walk = [start]
+        cur = start
+        cycle = None
+        for _ in range(self.MAX_WALK):
+            nbrs = self._edges.get(cur)
+            if not nbrs:
                 return None
-            pages.append(page)
+            # strongest successor; ties go to the most recently seen
+            nxt = max(nbrs, key=lambda b: (nbrs[b][0], nbrs[b][1]))
+            if nxt in walk:
+                cycle = walk[walk.index(nxt):]
+                break
+            walk.append(nxt)
+            cur = nxt
+        if not cycle:
+            return None
 
-        text = self._assemble(pages)
+        counts = [
+            self._edges[cycle[i]][cycle[(i + 1) % len(cycle)]][0]
+            for i in range(len(cycle))
+        ]
+        text = self._assemble(cycle)
         if not text or text == self._emitted:
             return None
-        self._emitted = text
-        return text
+
+        if len(cycle) >= 2 and min(counts) >= self.EDGE_CONFIDENT:
+            self._emitted = text
+            self._provisioned = True
+            return text
+        # Provisional: show the first plausible loop right away; the
+        # evidence-backed walk corrects it within a few cycles if a page was
+        # corrupted.  Two-page loops are usually fragments of a longer
+        # message whose other pages were lost — not trusted provisionally.
+        if not self._provisioned and len(cycle) >= 3:
+            self._emitted = text
+            self._provisioned = True
+            return text
+        return None
 
     @staticmethod
     def _assemble(pages: list[str]) -> str:
-        # Collection starts at an arbitrary point in the cycle, so the pages
-        # may be rotated.  The message tail is the space-padded page (messages
+        # The walk starts at an arbitrary point in the loop, so the pages may
+        # be rotated.  The message tail is the space-padded page (messages
         # are rarely exact multiples of 8 chars); rotate it to the end.  Ties
         # go to the page with the most padding — a mid-message page ends with
         # at most one space (a word boundary), the true tail usually more.
@@ -194,14 +208,7 @@ class DynamicPsAssembler:
         return {
             "dynamic": self._dynamic,
             "pages": list(self._page_log),
-            "anchor": self._anchor,
-            "current_len": len(self._current),
-            "cycle_lens": [len(c) for c in self._cycles],
+            "nodes": len(self._edges),
+            "provisioned": self._provisioned,
             "emitted": self._emitted,
         }
-
-    @staticmethod
-    def _similar(a: str, b: str) -> bool:
-        if a == b:
-            return True
-        return SequenceMatcher(None, a, b).ratio() >= 0.75

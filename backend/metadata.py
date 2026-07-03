@@ -35,6 +35,11 @@ class MetadataState:
         self.has_art: bool = False
         self.art_version: int = 0
         self.apple_music_url: Optional[str] = None
+        # Art provenance: "lot" (HD Radio LOT transfer) always supersedes
+        # "itunes" (search-based guess).  iTunes art is never written over
+        # LOT art; LOT art always overwrites anything.
+        self._art_source: Optional[str] = None
+        self._itunes_art_applied: Optional[str] = None
         # lifecycle state pushed to the frontend for status display
         self.state: str = "idle"           # idle | tuning | buffering | live
         # Incremented on every tune.  Metadata callbacks from demod/decoder
@@ -97,6 +102,8 @@ class MetadataState:
         self.has_art = False
         self.art_version = 0
         self.apple_music_url = None
+        self._art_source = None
+        self._itunes_art_applied = None
         self._has_rtp = False
         self._has_rt = False
         self._ps_asm.reset()
@@ -212,6 +219,7 @@ class MetadataState:
         if art_path:
             try:
                 self._write_art(art_path)
+                self._art_source = "lot"
                 changed = True
             except OSError as e:
                 logger.warning("Failed to copy cover art: %s", e)
@@ -287,23 +295,60 @@ class MetadataState:
     async def _delayed_save(self):
         try:
             await asyncio.sleep(4)
-            await self.save_history()
-            # If no native art arrived (HD stations often don't transmit LOT),
-            # fall back to iTunes for any band that has a stable artist + title.
-            if (not self.has_art
-                    and self.artist
-                    and self.title):
-                from .art_lookup import fetch_itunes_art
-                result = await fetch_itunes_art(self.artist, self.title)
-                if result:
-                    try:
-                        self._write_art(result["art_path"])
-                        self.apple_music_url = result.get("apple_music_url")
-                        await self.broadcast()
-                    except OSError as exc:
-                        logger.warning("Failed to copy iTunes art: %s", exc)
+            await self._finalize_track()
         except asyncio.CancelledError:
             pass
+
+    async def _finalize_track(self):
+        """Runs once metadata has settled: iTunes lookup (art + canonical
+        artist/title order), then history save with the corrected fields.
+
+        Art precedence: LOT art (HD Radio's own image transfer) always
+        supersedes iTunes art — the lookup is skipped entirely while LOT art
+        is showing, and an iTunes result is discarded if LOT art landed
+        during the network round-trip.
+        """
+        gen = self.tune_generation
+        result = None
+        if self.artist and self.title and self._art_source != "lot":
+            from .art_lookup import fetch_itunes_art
+            result = await fetch_itunes_art(self.artist, self.title)
+
+        if result and gen == self.tune_generation:
+            if self._maybe_swap_artist_title(result):
+                await self.broadcast()
+            if (self._art_source != "lot"
+                    and result["art_path"] != self._itunes_art_applied):
+                try:
+                    self._write_art(result["art_path"])
+                    self._art_source = "itunes"
+                    self._itunes_art_applied = result["art_path"]
+                    self.apple_music_url = result.get("apple_music_url")
+                    await self.broadcast()
+                except OSError as exc:
+                    logger.warning("Failed to copy iTunes art: %s", exc)
+
+        await self.save_history()
+
+    def _maybe_swap_artist_title(self, hit: dict) -> bool:
+        """RDS has no defined artist/title order — stations transmit both
+        'Artist - Title' and 'Title - Artist'.  The iTunes hit carries the
+        canonical names: when our fields match crosswise but not straight,
+        swap them."""
+        artist_name = hit.get("artist_name")
+        track_name  = hit.get("track_name")
+        if not artist_name or not track_name:
+            return False
+        straight = (_rds_similar(self.artist, artist_name)
+                    and _rds_similar(self.title, track_name))
+        crossed  = (_rds_similar(self.artist, track_name)
+                    and _rds_similar(self.title, artist_name))
+        if crossed and not straight:
+            self.artist, self.title = self.title, self.artist
+            logger.info("Artist/title order corrected via iTunes: %s — %s",
+                        self.artist, self.title)
+            return True
+        return False
 
     async def save_history(self):
         if not self.station_name or not self.artist or not self.title:

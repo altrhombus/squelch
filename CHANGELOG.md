@@ -23,8 +23,17 @@ All notable changes to Squelch are documented here. The format follows
 
 - Dynamic-PS reassembly: stations that page now-playing text through the RDS
   PS field in 8-character chunks (instead of using RadioText) now get
-  artist/title reconstructed via cycle detection and per-page majority
-  voting, with the paged fragments no longer shown as station names
+  artist/title reconstructed via a successor-graph model (page-to-page
+  evidence accumulated across lossy passes — tolerates heavy page loss on
+  marginal signals), with the paged fragments no longer shown as station
+  names
+- Artist/title order auto-correction: RDS has no defined order and stations
+  transmit both "Artist - Title" and "Title - Artist"; the iTunes lookup's
+  canonical names are used to detect and swap reversed fields before the
+  history save
+- Art-source precedence: HD Radio LOT artwork always supersedes iTunes
+  search artwork (including when LOT lands mid-lookup), and iTunes art now
+  refreshes on song changes instead of sticking
 - Single-tuner HD Radio detection: IBOC digital sidebands (±135–195 kHz)
   are sniffed from the raw IQ while listening to analog FM; the UI shows a
   tappable "HD available" badge that switches to HD mode. Detection ratio

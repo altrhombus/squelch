@@ -74,6 +74,9 @@ def _lookup_blocking(artist: str, title: str) -> Optional[dict]:
     # Upgrade from the 100px thumbnail to 600px hi-res
     art_url = art_url.replace("100x100bb.", "600x600bb.")
     apple_music_url = hit.get("trackViewUrl") or hit.get("collectionViewUrl")
+    # Canonical names — used to fix stations that transmit "Title - Artist"
+    artist_name = hit.get("artistName")
+    track_name  = hit.get("trackName")
 
     # Download to a stable per-song cache file so we only fetch each image once
     safe = "".join(c if c.isalnum() else "_" for c in query)[:80]
@@ -84,7 +87,8 @@ def _lookup_blocking(artist: str, title: str) -> Optional[dict]:
             with open(dest, "wb") as f:
                 f.write(img_resp.read())
         logger.debug("iTunes art cached for %r → %s", query, dest)
-        return {"art_path": dest, "apple_music_url": apple_music_url}
+        return {"art_path": dest, "apple_music_url": apple_music_url,
+                "artist_name": artist_name, "track_name": track_name}
     except Exception as exc:
         logger.debug("iTunes art download failed for %r: %s", art_url, exc)
         return None

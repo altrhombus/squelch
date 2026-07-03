@@ -64,15 +64,35 @@ def test_word_boundary_spaces_survive():
     assert texts == ["AC/DC - Back In Black"]
 
 
-def test_corrupted_page_provisionally_shown_then_corrected():
+def test_corrupted_page_outweighed_by_evidence():
     asm, clock = make()
     corrupted = ["Daughter", " of Empi", "re - Hpi", "bird    "]  # observed bit flip
     feed_pages(asm, clock, corrupted, repeats=1)
     texts = feed_pages(asm, clock, PAGES, repeats=3)
-    # The first completed cycle (containing the corrupt page) is emitted
-    # provisionally for responsiveness; voting then corrects it.
+    # The corrupt page is a rarely-reinforced detour the walk avoids
     assert texts[-1] == "Daughter of Empire - Humbird"
     assert len(texts) <= 2
+
+
+def test_lossy_cycles_still_assemble():
+    """The successor-graph payoff: every pass loses a different page, so a
+    complete cycle is NEVER observed — but page-to-page evidence still
+    accumulates and the full message is recovered."""
+    D, oE, rH, b = PAGES
+    passes = [
+        [D, oE, b],        # dropped 're - Hum'
+        [D, rH, b],        # dropped ' of Empi'
+        [oE, rH, b],       # dropped 'Daughter'
+        [D, oE, rH],       # dropped 'bird    '
+        [D, oE, rH, b],    # the only complete pass
+        [D, oE, rH, b],
+    ]
+    asm, clock = make()
+    texts = []
+    for p in passes:
+        texts += feed_pages(asm, clock, p, repeats=1)
+    assert texts, "nothing assembled from lossy stream"
+    assert texts[-1] == "Daughter of Empire - Humbird"
 
 
 def test_first_emission_within_one_cycle():
