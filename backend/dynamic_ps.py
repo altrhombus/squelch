@@ -48,6 +48,8 @@ class DynamicPsAssembler:
         self._clock = clock
         self.reset()
 
+    DEBUG_PAGES = 16   # raw pages kept for the diagnostics feed
+
     def reset(self):
         self._last_ps: Optional[str] = None
         self._last_change: float = 0.0
@@ -57,6 +59,7 @@ class DynamicPsAssembler:
         self._current: list[str] = []
         self._cycles: list[list[str]] = []
         self._emitted: Optional[str] = None
+        self._page_log: list[str] = []
 
     def feed(self, ps: str) -> PsResult:
         now = self._clock()
@@ -68,6 +71,8 @@ class DynamicPsAssembler:
             self._change_times = [
                 t for t in self._change_times if now - t <= self.WINDOW_SECS
             ]
+            self._page_log.append(ps)
+            del self._page_log[:-self.DEBUG_PAGES]
 
         if not self._dynamic:
             if len(self._change_times) >= self.DYNAMIC_CHANGES:
@@ -134,6 +139,18 @@ class DynamicPsAssembler:
             return None
         self._emitted = text
         return text
+
+    def debug(self) -> dict:
+        """Assembler state for the diagnostics feed — raw pages are the only
+        way to see what a station is actually paging over the air."""
+        return {
+            "dynamic": self._dynamic,
+            "pages": list(self._page_log),
+            "anchor": self._anchor,
+            "current_len": len(self._current),
+            "cycle_lens": [len(c) for c in self._cycles],
+            "emitted": self._emitted,
+        }
 
     @staticmethod
     def _similar(a: str, b: str) -> bool:

@@ -65,6 +65,7 @@ class MetadataState:
             "art_version": self.art_version,
             "art_url": "/art/current.jpg" if self.has_art else None,
             "apple_music_url": self.apple_music_url,
+            "ps_debug": self._ps_asm.debug(),
             "state": self.state,
         }
 
