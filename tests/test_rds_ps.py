@@ -139,3 +139,83 @@ def test_rt_terminator_truncates():
     dec = make_decoder(updates)
     feed_rt(dec, "Short message\rGARBAGE AFTER TERMINATOR")
     assert rt_values(updates)[-1] == "Short message"
+
+
+# ---------------------------------------------------------------------------
+# RDS extended charset (EN 50067:1998 Annex E)
+# ---------------------------------------------------------------------------
+
+def group0_bytes(seg: int, b0: int, b1: int):
+    b = (0 << 12) | seg
+    return [PI, b, 0, (b0 << 8) | b1]
+
+
+def test_ps_decodes_accented_chars():
+    """'Mötley C' — ö is RDS code 0x97, previously rejected as corruption,
+    which stalled reassembly for any accented artist."""
+    updates = []
+    dec = make_decoder(updates)
+    page = [(0x4D, 0x97), (0x74, 0x6C), (0x65, 0x79), (0x20, 0x43)]  # Mö tl ey ' C'
+    for seg, (a, c) in enumerate(page):
+        dec._decode_group(group0_bytes(seg, a, c), ["A", "B", "C", "D"])
+    assert ps_values(updates) == ["Mötley C"]
+
+
+def group2a_bytes(seg: int, four_bytes: list, flag: int = 0):
+    b = (2 << 12) | (flag << 4) | seg
+    c = (four_bytes[0] << 8) | four_bytes[1]
+    d = (four_bytes[2] << 8) | four_bytes[3]
+    return [PI, b, c, d]
+
+
+def test_rt_extended_chars_need_double_reception():
+    """A legit accent and a bit-flipped high bit look identical, so
+    extended-char RT segments require the same content twice."""
+    updates = []
+    dec = make_decoder(updates)
+    padded = "M?tley Crue - Looks That Kill".replace("?", "x").ljust(64)
+    accent_seg = [0x4D, 0x97, 0x74, 0x6C]   # 'Mötl'
+
+    def feed_pass():
+        for seg in range(16):
+            if seg == 0:
+                dec._decode_group(group2a_bytes(0, accent_seg), ["A", "B", "C", "D"])
+            else:
+                chunk = [ord(ch) for ch in padded[seg * 4:seg * 4 + 4]]
+                dec._decode_group(group2a_bytes(seg, chunk), ["A", "B", "C", "D"])
+
+    feed_pass()
+    assert rt_values(updates) == []           # accent segment still pending
+    feed_pass()                               # same content again → accepted
+    assert rt_values(updates)[-1].startswith("Mötl")
+
+
+def test_rt_flag_flip_debounced():
+    """A single corrupted A/B flag bit must not wipe accumulated segments —
+    spurious resets dominated RT latency on weak signals (observed on WMSE:
+    RT sometimes took minutes, sometimes seconds)."""
+    updates = []
+    dec = make_decoder(updates)
+    padded = "Nobody owns us but you!".ljust(64)
+
+    # 15 of 16 segments received…
+    for seg in range(15):
+        chunk = [ord(ch) for ch in padded[seg * 4:seg * 4 + 4]]
+        dec._decode_group(group2a_bytes(seg, chunk), ["A", "B", "C", "D"])
+
+    # …then one group arrives with a corrupted (flipped) flag bit
+    dec._decode_group(group2a_bytes(7, [0x41, 0x41, 0x41, 0x41], flag=1),
+                      ["A", "B", "C", "D"])
+
+    # The final segment with the original flag completes the message —
+    # the buffer must have survived the corrupt flag
+    chunk = [ord(ch) for ch in padded[60:64]]
+    dec._decode_group(group2a_bytes(15, chunk), ["A", "B", "C", "D"])
+    assert rt_values(updates)[-1] == "Nobody owns us but you!"
+
+    # A genuine message change (two consecutive new-flag groups) still resets
+    new = "Different message".ljust(64)
+    for seg in range(16):
+        chunk = [ord(ch) for ch in new[seg * 4:seg * 4 + 4]]
+        dec._decode_group(group2a_bytes(seg, chunk, flag=1), ["A", "B", "C", "D"])
+    assert rt_values(updates)[-1] == "Different message"

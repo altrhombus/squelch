@@ -106,10 +106,34 @@ def _syndrome_matches(word26: int) -> Optional[str]:
 # Main decoder
 # ---------------------------------------------------------------------------
 
-def _rt_chars_ok(chars: list) -> bool:
-    """Printable ASCII or the 0x0D message terminator — anything else is a
-    bit error (RadioText has no charset guard in the protocol itself)."""
-    return all(0x20 <= ord(ch) < 0x7F or ch == "\r" for ch in chars)
+# RDS basic character set, codes 0x80-0xFF — EN 50067:1998 Annex E
+# (transcribed from redsea's codetable_G0, the reference RDS decoder).
+# Codes 0x20-0x7E are decoded as plain ASCII: strictly the EBU table differs
+# in a few spots (0x24→¤, 0x5E→―, 0x60→‖, 0x7E→¯), but real-world encoders
+# overwhelmingly send ASCII there and the strict mapping would mangle '$'.
+_G0_HIGH = (
+    "áàéèíìóòúùÑÇŞβ¡Ĳ"
+    "âäêëîïôöûüñçşǧıĳ"
+    "ªα©‰Ǧěňőπ€£$←↑→↓"
+    "º¹²³±İńűµ¿÷°¼½¾§"
+    "ÁÀÉÈÍÌÓÒÚÙŘČŠŽÐĿ"
+    "ÂÄÊËÎÏÔÖÛÜřčšžđŀ"
+    "ÃÅÆŒŷÝÕØÞŊŔĆŚŹŦð"
+    "ãåæœŵýõøþŋŕćśźŧ "
+)
+
+
+def _rds_char(code: int) -> Optional[str]:
+    """Decode one RDS text byte; None = control/invalid (likely bit error)."""
+    if code == 0x0D:
+        return "\r"          # message terminator
+    if code == 0x0A:
+        return " "           # line break — render single-line
+    if 0x20 <= code < 0x7F:
+        return chr(code)
+    if code >= 0x80:
+        return _G0_HIGH[code - 0x80]
+    return None
 
 
 def _rt_emit(rt_chars: dict, n_segs: int) -> str:
@@ -161,6 +185,15 @@ class RdsDecoder:
         self._ps_chars: dict[int, tuple[str,str]] = {}  # segment → (char0, char1)
         self._rt_chars: dict[int, list[str]] = {}       # segment → chars (2A: 4, 2B: 2)
         self._rt_flag: Optional[int]  = None
+        # Extended-char segments (accented names) need the same value twice —
+        # a bit error flipping a char's high bit looks identical to a legit
+        # accent, and voting doesn't exist on the RT path.
+        self._rt_pending: dict[int, list[str]] = {}
+        # A/B flag flips only when the message changes; a single corrupted
+        # flag bit must not wipe 16 accumulated segments (spurious resets
+        # dominated RT latency on weak signals).
+        self._rt_flag_flips: int = 0
+        self._rt_held: Optional[tuple] = None   # group held while confirming a flip
         self._pty: int                 = 0
         # PTY debounce: require the same value twice before reporting
         self._pty_candidate: int       = 0
@@ -331,15 +364,18 @@ class RdsDecoder:
 
         if group_type == 0:          # Group 0A/0B — PS name
             seg       = b & 0x3
-            char0     = chr((d >> 8) & 0xFF)
-            char1     = chr(d & 0xFF)
+            char0     = _rds_char((d >> 8) & 0xFF)
+            char1     = _rds_char(d & 0xFF)
             # Segments must arrive in transmission order (0,1,2,3) with no
             # gaps, and the buffer is cleared after every emission.  Dynamic-PS
             # stations replace the whole message every ~1 s; the old
             # accumulate-and-overwrite approach emitted a hybrid of 3 stale +
             # 1 fresh segment on every group after the first fill, flooding
             # the downstream page reassembler with frankenpages.
-            if seg == 0:
+            # Control codes / invalid bytes are bit errors — restart the run.
+            if char0 is None or char1 is None or "\r" in (char0, char1):
+                self._ps_chars.clear()
+            elif seg == 0:
                 self._ps_chars = {0: (char0, char1)}
             elif len(self._ps_chars) == seg:
                 self._ps_chars[seg] = (char0, char1)
@@ -354,41 +390,19 @@ class RdsDecoder:
                     for s in range(4)
                 )
                 self._ps_chars.clear()
-                # Reject PS strings with non-printable characters — these are
-                # almost always bit errors.  RDS PS uses printable ASCII only.
-                if ps.strip() and all(0x20 <= ord(c) < 0x7F for c in ps):
+                if ps.strip():
                     update["ps"] = ps
 
         elif group_type == 2 and b0 == 0:   # Group 2A — RadioText (64 chars)
-            seg    = b & 0xF
-            flag   = (b >> 4) & 1
-            if flag != self._rt_flag:
-                self._rt_chars.clear()
-                self._rt_flag = flag
-            chars = [
-                chr((c >> 8) & 0xFF), chr(c & 0xFF),
-                chr((d >> 8) & 0xFF), chr(d & 0xFF),
-            ]
-            # Reject corrupted segments (bit errors show as non-printable
-            # bytes — observed live as '\\x86ãWM' flashing in the UI); the
-            # segment comes around again on the next RT cycle.  0x0D is the
-            # RDS message terminator and is legal.
-            if _rt_chars_ok(chars):
-                self._rt_chars[seg] = chars
-            if len(self._rt_chars) == 16:
-                update["rt"] = _rt_emit(self._rt_chars, 16)
+            seg   = b & 0xF
+            flag  = (b >> 4) & 1
+            bytes_ = [(c >> 8) & 0xFF, c & 0xFF, (d >> 8) & 0xFF, d & 0xFF]
+            self._handle_rt(seg, bytes_, flag, update)
 
         elif group_type == 2 and b0 == 1:   # Group 2B — RadioText (32 chars)
             seg   = b & 0xF
             flag  = (b >> 4) & 1
-            if flag != self._rt_flag:
-                self._rt_chars.clear()
-                self._rt_flag = flag
-            chars = [chr((d >> 8) & 0xFF), chr(d & 0xFF)]
-            if _rt_chars_ok(chars):
-                self._rt_chars[seg] = chars
-            if len(self._rt_chars) == 16:
-                update["rt"] = _rt_emit(self._rt_chars, 16)
+            self._handle_rt(seg, [(d >> 8) & 0xFF, d & 0xFF], flag, update)
 
         elif group_type == 3 and b0 == 0:  # Group 3A — ODA application announcement
             # Block C = 16-bit Application ID
@@ -451,3 +465,46 @@ class RdsDecoder:
         if update:
             logger.debug("RDS group decoded: type=%d%s %s", group_type, "B" if b0 else "A", update)
             self._cb(update)
+
+    def _handle_rt(self, seg: int, byte_vals: list, flag: int, update: dict):
+        """Shared RadioText segment ingest for groups 2A and 2B."""
+        if self._rt_flag is None:
+            self._rt_flag = flag
+        if flag != self._rt_flag:
+            # The A/B flag flips only when the message changes.  Require two
+            # consecutive groups with the new flag before wiping the buffer —
+            # a single corrupted flag bit previously reset all accumulated
+            # segments, which dominated RT latency on weak signals.  The
+            # first new-flag group is held and replayed on confirmation so a
+            # genuine change loses nothing.
+            self._rt_flag_flips += 1
+            if self._rt_flag_flips < 2:
+                self._rt_held = (seg, list(byte_vals))
+                return
+            self._rt_chars.clear()
+            self._rt_pending.clear()
+            self._rt_flag = flag
+            held, self._rt_held = self._rt_held, None
+            if held:
+                self._store_rt_segment(*held)
+        else:
+            self._rt_held = None
+        self._rt_flag_flips = 0
+
+        self._store_rt_segment(seg, byte_vals)
+        if len(self._rt_chars) == 16:
+            update["rt"] = _rt_emit(self._rt_chars, 16)
+
+    def _store_rt_segment(self, seg: int, byte_vals: list):
+        chars = [_rds_char(v) for v in byte_vals]
+        if any(ch is None for ch in chars):
+            return   # bit error — this segment comes around again
+
+        if any(v >= 0x80 for v in byte_vals):
+            # Extended chars (accented names) are legit, but a bit error on
+            # an ASCII char's high bit looks identical — require the same
+            # segment content twice before accepting it.
+            if self._rt_pending.get(seg) != chars:
+                self._rt_pending[seg] = chars
+                return
+        self._rt_chars[seg] = chars
