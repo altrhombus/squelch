@@ -64,12 +64,33 @@ def test_word_boundary_spaces_survive():
     assert texts == ["AC/DC - Back In Black"]
 
 
-def test_corrupted_page_outvoted():
+def test_corrupted_page_provisionally_shown_then_corrected():
     asm, clock = make()
     corrupted = ["Daughter", " of Empi", "re - Hpi", "bird    "]  # observed bit flip
     feed_pages(asm, clock, corrupted, repeats=1)
     texts = feed_pages(asm, clock, PAGES, repeats=3)
-    assert texts == ["Daughter of Empire - Humbird"]
+    # The first completed cycle (containing the corrupt page) is emitted
+    # provisionally for responsiveness; voting then corrects it.
+    assert texts[-1] == "Daughter of Empire - Humbird"
+    assert len(texts) <= 2
+
+
+def test_first_emission_within_one_cycle():
+    """Provisional emit: text appears after ~1 cycle, not after full voting."""
+    asm, clock = make()
+    texts = []
+    pages_fed = 0
+    for _ in range(3):
+        for p in PAGES:
+            res = asm.feed(p)
+            pages_fed += 1
+            if res.text:
+                texts.append((pages_fed, res.text))
+            clock.tick(2.0)
+    assert texts, "nothing emitted"
+    first_at, first_text = texts[0]
+    assert first_text == "Daughter of Empire - Humbird"
+    assert first_at <= len(PAGES) * 2 + 1   # within roughly one cycle of detection
 
 
 def test_song_change_emits_new_text():
