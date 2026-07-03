@@ -322,13 +322,16 @@ class RdsDecoder:
             char1     = chr(d & 0xFF)
             self._ps_chars[seg] = (char0, char1)
             if len(self._ps_chars) == 4:
+                # Deliver the raw 8 characters unstripped — stations that page
+                # song text through PS rely on the space padding for word
+                # boundaries when the pages are reassembled downstream.
                 ps = "".join(
                     self._ps_chars[s][0] + self._ps_chars[s][1]
                     for s in range(4)
-                ).rstrip()
+                )
                 # Reject PS strings with non-printable characters — these are
                 # almost always bit errors.  RDS PS uses printable ASCII only.
-                if ps and all(0x20 <= ord(c) < 0x7F for c in ps):
+                if ps.strip() and all(0x20 <= ord(c) < 0x7F for c in ps):
                     update["ps"] = ps
                 else:
                     # Partial corruption — discard and keep searching

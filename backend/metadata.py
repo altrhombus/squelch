@@ -7,6 +7,8 @@ from difflib import SequenceMatcher
 from typing import Optional
 from fastapi import WebSocket
 
+from .dynamic_ps import DynamicPsAssembler
+
 logger = logging.getLogger(__name__)
 
 ART_DIR = "/tmp/sdr-art"
@@ -24,6 +26,7 @@ class MetadataState:
         self.pty: Optional[str] = None
         self.pi_code: Optional[str] = None
         self.signal_bars: int = 0          # 0–5
+        self.hd_available: bool = False    # IBOC sidebands detected on analog FM
         self.hd_locked: bool = False
         self.hd_channel: Optional[int] = None       # 1-based (1=HD1, 2=HD2, …)
         self.hd_channels_available: list = []       # e.g. [1, 2, 3]
@@ -37,6 +40,8 @@ class MetadataState:
         self._last_history_key: Optional[str] = None
         self._history_save_task: Optional[asyncio.Task] = None
         self._has_rtp: bool = False   # True once RT+ structured data received
+        self._has_rt: bool = False    # True once any RadioText received
+        self._ps_asm = DynamicPsAssembler()
         self._websockets: set[WebSocket] = set()
 
     def to_dict(self) -> dict:
@@ -50,6 +55,7 @@ class MetadataState:
             "pty": self.pty,
             "pi_code": self.pi_code,
             "signal_bars": self.signal_bars,
+            "hd_available": self.hd_available,
             "hd_locked": self.hd_locked,
             "hd_channel": self.hd_channel,
             "hd_channels_available": self.hd_channels_available,
@@ -76,6 +82,7 @@ class MetadataState:
         self.title = None
         self.pty = None
         self.pi_code = None
+        self.hd_available = False
         self.hd_locked = False
         self.hd_channel = None
         self.hd_channels_available = []
@@ -84,6 +91,8 @@ class MetadataState:
         self.art_version = 0
         self.apple_music_url = None
         self._has_rtp = False
+        self._has_rt = False
+        self._ps_asm.reset()
         self.state = "tuning"
         self._clear_art()
 
@@ -94,9 +103,26 @@ class MetadataState:
                    rtp_title: str = None, rtp_artist: str = None):
         changed = False
 
-        if ps and ps.strip() and ps.strip() != self.station_name:
-            self.station_name = ps.strip()
-            changed = True
+        if ps and ps.strip():
+            res = self._ps_asm.feed(ps)
+            if res.dynamic:
+                # The station pages song text through PS — it is not a station
+                # name.  Clear any page fragment we optimistically displayed.
+                if self.station_name is not None:
+                    self.station_name = None
+                    changed = True
+                # Reassembled text fills artist/title only when the station
+                # provides no real RadioText (RT and RT+ are more reliable).
+                if res.text and not self._has_rt and not self._has_rtp:
+                    parsed = _parse_rt(res.text)
+                    if parsed != (self.artist, self.title):
+                        self.artist, self.title = parsed
+                        changed = True
+            elif ps.strip() != self.station_name:
+                # Static (or not-yet-proven-dynamic) PS: show it immediately so
+                # normal stations display their name without delay.
+                self.station_name = ps.strip()
+                changed = True
 
         # RT+ structured tags (IEC 62106 Annex A) take priority over heuristic
         # text splitting.  Once a station provides RT+ data, suppress the
@@ -112,6 +138,7 @@ class MetadataState:
 
         # Heuristic RT parsing — only when no RT+ data has been received
         if rt and rt.strip() and not self._has_rtp:
+            self._has_rt = True
             parsed = _parse_rt(rt.strip())
             if parsed != (self.artist, self.title):
                 self.artist, self.title = parsed
