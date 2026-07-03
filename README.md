@@ -6,7 +6,8 @@ A self-hosted SDR radio streamer for the Raspberry Pi. Tune FM (stereo), AM, HD 
 
 - **AAC-LC audio stream** — chunked HTTP delivery, natively decoded by iOS/macOS/Chrome with no plugins or apps required
 - **FM stereo** — custom DSP pipeline (numpy/scipy): pilot demodulation, Wiener filter noise reduction, stereo blend, de-emphasis, K-weighted AGC
-- **RDS metadata** — station name, artist/title, program type (FM)
+- **RDS metadata** — station name, artist/title, program type (FM); reassembles song info from stations that page it through the PS field
+- **HD detection** — spots IBOC digital sidebands while you listen to analog FM and offers a one-tap switch to HD
 - **HD Radio** — full NRSC-5 decode including cover art and rich metadata
 - **AirPlay** — tap the AirPlay button in Safari to route audio to any AirPlay target
 - **Recording** — one-tap recording, auto-named from station metadata

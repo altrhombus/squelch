@@ -21,6 +21,14 @@ All notable changes to Squelch are documented here. The format follows
 
 ### Added
 
+- Dynamic-PS reassembly: stations that page now-playing text through the RDS
+  PS field in 8-character chunks (instead of using RadioText) now get
+  artist/title reconstructed via cycle detection and per-page majority
+  voting, with the paged fragments no longer shown as station names
+- Single-tuner HD Radio detection: IBOC digital sidebands (±135–195 kHz)
+  are sniffed from the raw IQ while listening to analog FM; the UI shows a
+  tappable "HD available" badge that switches to HD mode. Detection ratio
+  exposed as `hd_ratio` in diagnostics for threshold calibration
 - Icecast2 output: pushes the AAC stream to an Icecast mount with live
   now-playing metadata from RDS/HD Radio. `icecast.keep_alive` controls
   whether the mount stays live only while listeners are active (default,

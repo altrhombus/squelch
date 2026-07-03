@@ -15,6 +15,7 @@ import numpy as np
 
 from .fm import FmStereoDemodulator
 from .am import AmDemodulator, NfmDemodulator
+from .hd_detect import HdSidebandDetector
 from .rds import RdsDecoder
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,8 @@ class RadioPipeline:
         self._squelch_iq: float = 0.0      # 0 = disabled; mute audio when iq_rms < threshold
         self._squelch_silence_n: int = 5243  # output samples per block; updated on first live block
         self._current_gain: Optional[float] = None   # dB; None when hardware auto
+        self._hd_detect: Optional[HdSidebandDetector] = None   # FM band only
+        self._hd_detect_countdown = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -94,8 +97,11 @@ class RadioPipeline:
 
         if band == "fm":
             self._rds = RdsDecoder(self._on_rds)
+            self._hd_detect = HdSidebandDetector()
         else:
             self._rds = None
+            self._hd_detect = None
+        self._hd_detect_countdown = 0
 
         self._task = asyncio.create_task(
             self._run(freq_hz, band, gain),
@@ -268,6 +274,15 @@ class RadioPipeline:
                 iq_rms = float(np.sqrt(np.mean(iq.real**2 + iq.imag**2)))
                 if self._demod is not None:
                     self._demod.last_iq_rms = iq_rms
+
+                # HD sideband sniff on the raw IQ (FM only) — every ~10 blocks
+                # (~2 s); the sidebands live at ±135-195 kHz, which the audio
+                # decimation below throws away.
+                if self._hd_detect is not None:
+                    self._hd_detect_countdown -= 1
+                    if self._hd_detect_countdown <= 0:
+                        self._hd_detect_countdown = 10
+                        self._hd_detect.process(iq)
                 if self._squelch_iq > 0 and iq_rms < self._squelch_iq:
                     n = self._squelch_silence_n
                     return encoder.encode(np.zeros(n, np.float32), np.zeros(n, np.float32))
@@ -295,6 +310,11 @@ class RadioPipeline:
         except Exception as e:
             logger.warning("DSP error: %s", e)
         return None
+
+    @property
+    def hd_available(self) -> bool:
+        """True when IBOC digital sidebands are detected on the tuned FM station."""
+        return self._hd_detect is not None and self._hd_detect.available
 
     @property
     def signal_strength(self) -> float:
@@ -325,6 +345,8 @@ class RadioPipeline:
             d["noise_rms"]     = float(getattr(self._demod, "last_noise_rms",     0.0))
             d["blend"]         = float(getattr(self._demod, "last_blend",         0.0))
             d["audio_rms"]     = float(getattr(self._demod, "last_audio_rms",     0.0))
+        if self._hd_detect is not None:
+            d["hd_ratio"] = round(self._hd_detect.ratio, 3)   # calibration aid
         if self._current_gain is not None:
             d["gain_db"] = self._current_gain
         return d

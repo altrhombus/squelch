@@ -231,7 +231,11 @@ class RadioManager:
                         self._meta.diag = diag
                         has_diag = True
 
-                cur = (bars, stereo, self._meta.state)
+                hd_avail = bool(self._pipeline is not None
+                                and getattr(self._pipeline, "hd_available", False))
+                self._meta.hd_available = hd_avail
+
+                cur = (bars, stereo, self._meta.state, hd_avail)
                 if cur != _prev or has_diag:
                     _prev = cur
                     await self._meta.broadcast()

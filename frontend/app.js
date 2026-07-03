@@ -89,6 +89,11 @@ const elHdBadge       = document.getElementById("hd-badge");
 const elPtyBadge      = document.getElementById("pty-badge");
 const bars            = document.querySelectorAll(".bar");
 
+// Tap the "HD available" badge to retune the current station in HD mode
+elHdBadge.addEventListener("click", () => {
+  if (elHdBadge.classList.contains("hd-available")) tune(currentFreq, "hd");
+});
+
 const modalPreset     = document.getElementById("modal-preset");
 const presetNameInput = document.getElementById("preset-name-input");
 const btnSavePreset   = document.getElementById("btn-save-preset");
@@ -522,7 +527,20 @@ function applyMeta(m) {
     elHdBadge.addEventListener("animationend", () => elHdBadge.classList.remove("hd-pulse"), { once: true });
   }
   _prevHdLocked = !!m.hd_locked;
-  toggleEl(elHdBadge, m.hd_locked);
+  // "HD available": IBOC sidebands detected while listening to analog FM —
+  // badge becomes a tap target that retunes the same frequency in HD mode.
+  const hdAvailable = !!m.hd_available && currentBand === "fm" && !m.hd_locked;
+  elHdBadge.classList.toggle("hd-available", hdAvailable);
+  if (hdAvailable) {
+    elHdBadge.setAttribute("role", "button");
+    elHdBadge.setAttribute("title", "HD Radio detected — tap to switch");
+    elHdBadge.setAttribute("aria-label", "HD Radio detected, tap to switch to HD");
+  } else {
+    elHdBadge.removeAttribute("role");
+    elHdBadge.removeAttribute("title");
+    elHdBadge.removeAttribute("aria-label");
+  }
+  toggleEl(elHdBadge, m.hd_locked || hdAvailable);
 
   // PTY badge
   if (m.pty) {

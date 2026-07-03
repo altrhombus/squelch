@@ -401,6 +401,15 @@ html, body {
   letter-spacing: 0.06em;
 }
 
+/* IBOC sidebands detected while on analog FM — tappable to switch to HD */
+#hd-badge.hd-available {
+  background: transparent;
+  border-style: dashed;
+  opacity: 0.75;
+  cursor: pointer;
+}
+#hd-badge.hd-available:hover { opacity: 1; }
+
 #pty-badge {
   background: rgba(var(--art-r), var(--art-g), var(--art-b), 0.18);
   border: 1px solid rgba(var(--art-r), var(--art-g), var(--art-b), 0.3);
