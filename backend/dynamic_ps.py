@@ -74,6 +74,7 @@ class DynamicPsAssembler:
         # successor graph: page_a -> page_b -> [count, last_seen]
         self._edges: dict[str, dict[str, list]] = {}
         self._emitted: Optional[str] = None
+        self._emitted_confident = False
         self._provisioned = False
         self._novel_run = 0
         self._page_log: list[str] = []
@@ -186,19 +187,27 @@ class DynamicPsAssembler:
             for i in range(len(cycle))
         ]
         text = self._assemble(cycle)
-        if not text or text == self._emitted:
+        if not text:
             return None
 
         if len(cycle) >= 2 and min(counts) >= self.EDGE_CONFIDENT:
+            # Re-emit identical text when it upgrades provisional→confident:
+            # the metadata layer gates history writes on confidence.
+            if text == self._emitted and self._emitted_confident:
+                return None
             self._emitted = text
+            self._emitted_confident = True
             self._provisioned = True
             return text, len(cycle), True
+        if text == self._emitted:
+            return None
         # Provisional: show the first plausible loop right away; the
         # evidence-backed walk corrects it within a few cycles if a page was
         # corrupted.  Two-page loops are usually fragments of a longer
         # message whose other pages were lost — not trusted provisionally.
         if not self._provisioned and len(cycle) >= 3:
             self._emitted = text
+            self._emitted_confident = False
             self._provisioned = True
             return text, len(cycle), False
         return None

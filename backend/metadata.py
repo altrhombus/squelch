@@ -65,6 +65,11 @@ class MetadataState:
         self._history_save_task: Optional[asyncio.Task] = None
         self._has_rtp: bool = False   # True once RT+ structured data received
         self._has_rt: bool = False    # True once any RadioText received
+        # Confidence in the current artist/title.  Provisional sources
+        # (partial RadioText, single-evidence PS assembly) display
+        # immediately but never reach history or the iTunes lookup —
+        # display fast, write once confident.
+        self._track_confident: bool = False
         self._ps_asm = DynamicPsAssembler()
         self._websockets: set[WebSocket] = set()
 
@@ -120,6 +125,7 @@ class MetadataState:
         self._itunes_art_applied = None
         self._has_rtp = False
         self._has_rt = False
+        self._track_confident = False
         self._ps_asm.reset()
         self.state = "tuning"
         self._clear_art()
@@ -129,7 +135,7 @@ class MetadataState:
 
     def update_rds(self, ps: str = None, rt: str = None, pty: str = None, pi: str = None,
                    rtp_title: str = None, rtp_artist: str = None,
-                   gen: int = None):
+                   rt_partial: bool = False, gen: int = None):
         if gen is not None and gen != self.tune_generation:
             return   # stale callback from a previous station's pipeline
         changed = False
@@ -170,8 +176,10 @@ class MetadataState:
                 song_shaped = (artist and title
                                and len(artist) >= 2 and len(title) >= 2)
                 if song_shaped:
-                    if (artist, title) != (self.artist, self.title):
+                    if ((artist, title) != (self.artist, self.title)
+                            or res.confident != self._track_confident):
                         self.artist, self.title = artist, title
+                        self._track_confident = res.confident
                         changed = True
                 elif self._show_ps_messages:
                     # Non-song message (show promo, DJ schedule…) —
@@ -180,6 +188,7 @@ class MetadataState:
                     msg = " ".join(res.text.split())
                     if msg and (None, msg) != (self.artist, self.title):
                         self.artist, self.title = None, msg
+                        self._track_confident = False   # not a song — never saved
                         changed = True
 
         # RT+ structured tags (IEC 62106 Annex A) take priority over heuristic
@@ -188,18 +197,23 @@ class MetadataState:
         if rtp_title is not None and rtp_title != self.title:
             self.title = rtp_title
             self._has_rtp = True
+            self._track_confident = True
             changed = True
         if rtp_artist is not None and rtp_artist != self.artist:
             self.artist = rtp_artist
             self._has_rtp = True
+            self._track_confident = True
             changed = True
 
         # Heuristic RT parsing — only when no RT+ data has been received
         if rt and rt.strip() and not self._has_rtp:
             self._has_rt = True
             parsed = _parse_rt(rt.strip())
-            if parsed != (self.artist, self.title):
+            confident = not rt_partial
+            if (parsed != (self.artist, self.title)
+                    or confident != self._track_confident):
                 self.artist, self.title = parsed
+                self._track_confident = confident
                 changed = True
 
         if pty and pty != self.pty:
@@ -236,9 +250,11 @@ class MetadataState:
             changed = True
         if artist and artist != self.artist:
             self.artist = artist
+            self._track_confident = True   # nrsc5 tags are authoritative
             changed = True
         if title and title != self.title:
             self.title = title
+            self._track_confident = True
             changed = True
         if pty and pty != self.pty:
             self.pty = pty
@@ -339,11 +355,18 @@ class MetadataState:
         """Runs once metadata has settled: iTunes lookup (art + canonical
         artist/title order), then history save with the corrected fields.
 
+        Confidence gate: provisional data (partial RadioText, single-evidence
+        PS assembly) is display-only — no lookup, no history row.  When the
+        confident version arrives it re-triggers the debounce and lands here
+        again.  Display fast, write once confident.
+
         Art precedence: LOT art (HD Radio's own image transfer) always
         supersedes iTunes art — the lookup is skipped entirely while LOT art
         is showing, and an iTunes result is discarded if LOT art landed
         during the network round-trip.
         """
+        if not self._track_confident:
+            return
         gen = self.tune_generation
         result = None
         if (self._itunes_enabled

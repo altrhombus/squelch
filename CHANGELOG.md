@@ -38,6 +38,14 @@ All notable changes to Squelch are documented here. The format follows
   disables order correction), `order_correction`, and `show_ps_messages`
   (display non-song PS messages like show promos on the track line —
   garbled fragments are always filtered regardless)
+- Tiered RadioText emission for weak signals: messages ending in the 0x0D
+  terminator complete as soon as all segments up to it arrive (a 23-char
+  message needs 6 segments, not 16); still-incomplete text is shown
+  partially (gaps as spaces) after 15 s and fills in progressively
+- Confidence-gated persistence: provisional data (partial RadioText,
+  single-evidence PS assembly) displays immediately but never reaches
+  history or the iTunes lookup — history is written once, from confident
+  data, instead of write-then-fix
 - Single-tuner HD Radio detection: IBOC digital sidebands (±135–195 kHz)
   are sniffed from the raw IQ while listening to analog FM; the UI shows a
   tappable "HD available" badge that switches to HD mode. Detection ratio

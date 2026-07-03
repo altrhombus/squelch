@@ -19,6 +19,7 @@ invoked with a dict when any field changes.
 """
 
 import logging
+import time
 import numpy as np
 from scipy.signal import butter, sosfilt, resample_poly, hilbert
 from typing import Callable, Optional
@@ -136,10 +137,21 @@ def _rds_char(code: int) -> Optional[str]:
     return None
 
 
+# Partial RadioText display: if the buffer is still incomplete after this
+# long with at least this many segments, emit a gap-padded version so weak
+# signals show *something* while the rest fills in.  Partial emissions are
+# flagged and never reach history or the iTunes lookup.
+_RT_PARTIAL_MIN_SEGS   = 12
+_RT_PARTIAL_AFTER_SECS = 15.0
+
+
 def _rt_emit(rt_chars: dict, n_segs: int) -> str:
-    """Join received segments and honor the 0x0D terminator — everything
-    after it is padding."""
-    full = "".join("".join(rt_chars[s]) for s in range(n_segs))
+    """Join received segments (missing ones as spaces) and honor the 0x0D
+    terminator — everything after it is padding."""
+    seg_len = len(next(iter(rt_chars.values())))
+    full = "".join(
+        "".join(rt_chars.get(s, [" "] * seg_len)) for s in range(n_segs)
+    )
     return full.split("\r")[0].rstrip()
 
 
@@ -152,8 +164,9 @@ class RdsDecoder:
     Stateful RDS decoder. Feed FM composite blocks; receive metadata callbacks.
     """
 
-    def __init__(self, callback: Callable[[dict], None]):
+    def __init__(self, callback: Callable[[dict], None], clock=time.monotonic):
         self._cb = callback
+        self._clock = clock
 
         # 19 kHz pilot extraction — must bandpass the pilot first, then cube
         # the analytic signal to get the 57 kHz carrier.  Passing hilbert of
@@ -194,6 +207,8 @@ class RdsDecoder:
         # dominated RT latency on weak signals).
         self._rt_flag_flips: int = 0
         self._rt_held: Optional[tuple] = None   # group held while confirming a flip
+        self._rt_first_seg_t: Optional[float] = None   # accumulation start (partial timer)
+        self._rt_last_emit: Optional[tuple] = None     # (text, partial) dedupe
         self._pty: int                 = 0
         # PTY debounce: require the same value twice before reporting
         self._pty_candidate: int       = 0
@@ -483,6 +498,8 @@ class RdsDecoder:
                 return
             self._rt_chars.clear()
             self._rt_pending.clear()
+            self._rt_first_seg_t = None
+            self._rt_last_emit = None
             self._rt_flag = flag
             held, self._rt_held = self._rt_held, None
             if held:
@@ -492,8 +509,38 @@ class RdsDecoder:
         self._rt_flag_flips = 0
 
         self._store_rt_segment(seg, byte_vals)
-        if len(self._rt_chars) == 16:
-            update["rt"] = _rt_emit(self._rt_chars, 16)
+        self._maybe_emit_rt(update)
+
+    def _maybe_emit_rt(self, update: dict):
+        """Tiered emission:
+        1. all 16 segments → complete (confident)
+        2. every segment up to a 0x0D terminator → complete (confident);
+           segments beyond the terminator are padding, no need to wait
+        3. still incomplete after a while → partial, gaps as spaces,
+           flagged rt_partial (display-only downstream)
+        """
+        n = len(self._rt_chars)
+        if n == 0:
+            return
+        rt, partial = None, False
+        if n == 16:
+            rt = _rt_emit(self._rt_chars, 16)
+        else:
+            term = min((s for s, ch in self._rt_chars.items() if "\r" in ch),
+                       default=None)
+            if term is not None and all(s in self._rt_chars for s in range(term + 1)):
+                rt = _rt_emit(self._rt_chars, term + 1)
+            elif (n >= _RT_PARTIAL_MIN_SEGS
+                  and self._rt_first_seg_t is not None
+                  and self._clock() - self._rt_first_seg_t > _RT_PARTIAL_AFTER_SECS):
+                rt = _rt_emit(self._rt_chars, 16)
+                partial = True
+        # Dedupe on (text, partial) so the partial→complete transition of
+        # identical text still reaches the metadata layer as an upgrade.
+        if rt is not None and (rt, partial) != self._rt_last_emit:
+            self._rt_last_emit = (rt, partial)
+            update["rt"] = rt
+            update["rt_partial"] = partial
 
     def _store_rt_segment(self, seg: int, byte_vals: list):
         chars = [_rds_char(v) for v in byte_vals]
@@ -507,4 +554,6 @@ class RdsDecoder:
             if self._rt_pending.get(seg) != chars:
                 self._rt_pending[seg] = chars
                 return
+        if self._rt_first_seg_t is None:
+            self._rt_first_seg_t = self._clock()
         self._rt_chars[seg] = chars

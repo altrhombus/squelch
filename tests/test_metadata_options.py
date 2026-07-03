@@ -24,6 +24,7 @@ def make_state(cfg=None, artist=None, title=None):
     state.update_tune(88.9e6, "fm")
     if artist or title:
         state.artist, state.title = artist, title
+        state._track_confident = True   # simulates confident data
     return state
 
 
@@ -109,6 +110,73 @@ async def test_short_fragments_never_shown_even_with_messages_on():
     feed_message(state, [" Tomatoe", "s - Lucy"], repeats=6)
     assert state.artist is None
     assert state.title is None
+    state.update_tune(91.1e6, "fm")
+
+
+# ---------------------------------------------------------------------------
+# Confidence gate: display fast, write history once confident
+# ---------------------------------------------------------------------------
+
+async def test_partial_rt_displays_but_never_saves(tmp_db, monkeypatch):
+    await tmp_db.init_db()
+    state = make_state()
+    state.station_name = "WMSE"
+    calls = []
+
+    async def spy_fetch(artist, title):
+        calls.append((artist, title))
+        return None
+    monkeypatch.setattr(art_lookup, "fetch_itunes_art", spy_fetch)
+
+    # Partial RadioText: shown immediately…
+    state.update_rds(rt="Little Richard - Taxi Blu", rt_partial=True)
+    assert state.title == "Taxi Blu"
+    await state._finalize_track()
+    assert calls == []                       # no lookup from partial data
+    db = await tmp_db.get_db()
+    async with db.execute("SELECT COUNT(*) FROM history") as cur:
+        assert (await cur.fetchone())[0] == 0    # no history row either
+
+    # …then the complete version arrives: lookup + history unlock
+    state.station_name = "WMSE"              # cleared? keep set
+    state.update_rds(rt="Little Richard - Taxi Blues", rt_partial=False)
+    await state._finalize_track()
+    assert calls == [("Little Richard", "Taxi Blues")]
+    async with db.execute("SELECT artist, title FROM history") as cur:
+        rows = await cur.fetchall()
+    assert [(r["artist"], r["title"]) for r in rows] == [("Little Richard", "Taxi Blues")]
+    state.update_tune(91.1e6, "fm")
+
+
+async def test_provisional_ps_not_saved_until_confident(tmp_db, monkeypatch):
+    await tmp_db.init_db()
+    state = make_state()
+    state.station_name = "WXYZ"
+    monkeypatch.setattr(art_lookup, "fetch_itunes_art", fake_fetch(None, []))
+    clock = state._ps_asm._clock
+
+    saved = []
+    orig_save = state.save_history
+
+    async def spy_save():
+        saved.append(state._track_confident)
+        await orig_save()
+    state.save_history = spy_save
+
+    for i, cycles in enumerate(range(4)):
+        for p in SONG:
+            state.update_rds(ps=p)
+            clock.tick(2.0)
+        state.station_name = "WXYZ"   # dynamic clears it; re-pin for save
+        await state._finalize_track()
+
+    # Every history write happened with confident data only
+    assert saved, "confident version never saved"
+    assert all(saved)
+    db = await tmp_db.get_db()
+    async with db.execute("SELECT artist FROM history") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1                    # written once, not write-then-fix
     state.update_tune(91.1e6, "fm")
 
 

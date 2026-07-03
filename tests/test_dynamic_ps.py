@@ -53,7 +53,10 @@ def test_static_ps_stays_static():
 def test_paged_ps_reassembles_after_two_clean_cycles():
     asm, clock = make()
     texts = feed_pages(asm, clock, PAGES, repeats=4)
-    assert texts == ["Daughter of Empire - Humbird"]  # emitted exactly once
+    # Once provisionally, then re-emitted on the provisional→confident
+    # upgrade (the metadata layer gates history on confidence)
+    assert set(texts) == {"Daughter of Empire - Humbird"}
+    assert len(texts) <= 2
 
 
 def test_word_boundary_spaces_survive():
@@ -61,7 +64,8 @@ def test_word_boundary_spaces_survive():
     pages = ["AC/DC - ", "Back In ", "Black   "]
     asm, clock = make()
     texts = feed_pages(asm, clock, pages, repeats=4)
-    assert texts == ["AC/DC - Back In Black"]
+    assert set(texts) == {"AC/DC - Back In Black"}
+    assert len(texts) <= 2
 
 
 def test_corrupted_page_outweighed_by_evidence():

@@ -35,6 +35,7 @@ def make_state(artist, title):
     state = MetadataState()
     state.update_tune(88.9e6, "fm")
     state.artist, state.title = artist, title
+    state._track_confident = True   # these tests simulate confident data
     return state
 
 

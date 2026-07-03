@@ -11,7 +11,17 @@ from backend.sdr.rds import RdsDecoder
 PI = 0x9552
 
 
-def make_decoder(updates: list) -> RdsDecoder:
+class FakeClock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def make_decoder(updates: list, clock=None) -> RdsDecoder:
+    if clock is not None:
+        return RdsDecoder(updates.append, clock=clock)
     return RdsDecoder(updates.append)
 
 
@@ -188,6 +198,48 @@ def test_rt_extended_chars_need_double_reception():
     assert rt_values(updates) == []           # accent segment still pending
     feed_pass()                               # same content again → accepted
     assert rt_values(updates)[-1].startswith("Mötl")
+
+
+def test_rt_terminator_allows_early_completion():
+    """A message ending in 0x0D is complete once every segment up to the
+    terminator is present — the padding segments after it are never needed.
+    Big weak-signal latency win: a 23-char message needs 6 segments, not 16."""
+    updates = []
+    dec = make_decoder(updates)
+    text = "Nobody owns us but you!\r"
+    padded = text.ljust(64)
+    for seg in range(6):     # segments 0-5 cover the text + terminator
+        chunk = [ord(ch) for ch in padded[seg * 4:seg * 4 + 4]]
+        dec._decode_group(group2a_bytes(seg, chunk), ["A", "B", "C", "D"])
+    vals = rt_values(updates)
+    assert vals[-1] == "Nobody owns us but you!"
+    assert updates[-1]["rt_partial"] is False    # complete, not partial
+
+
+def test_rt_partial_emission_after_timeout():
+    """13 of 16 segments after >15 s → partial display with gaps as spaces,
+    flagged partial; completing the message upgrades it to non-partial."""
+    updates = []
+    clock = FakeClock()
+    dec = make_decoder(updates, clock=clock)
+    padded = "Little Richard - Taxi Blues here".ljust(64)
+
+    for seg in range(13):
+        chunk = [ord(ch) for ch in padded[seg * 4:seg * 4 + 4]]
+        dec._decode_group(group2a_bytes(seg, chunk), ["A", "B", "C", "D"])
+    assert rt_values(updates) == []              # too early for partial
+
+    clock.t += 20.0
+    chunk = [ord(ch) for ch in padded[12 * 4:12 * 4 + 4]]
+    dec._decode_group(group2a_bytes(12, chunk), ["A", "B", "C", "D"])
+    assert updates[-1]["rt_partial"] is True
+    assert rt_values(updates)[-1].startswith("Little Richard - Taxi Blues")
+
+    for seg in range(13, 16):
+        chunk = [ord(ch) for ch in padded[seg * 4:seg * 4 + 4]]
+        dec._decode_group(group2a_bytes(seg, chunk), ["A", "B", "C", "D"])
+    assert updates[-1]["rt_partial"] is False    # upgraded to complete
+    assert rt_values(updates)[-1] == "Little Richard - Taxi Blues here"
 
 
 def test_rt_flag_flip_debounced():
