@@ -318,6 +318,16 @@ Squelch is designed for a **trusted home LAN** and has **no authentication** —
 
 ---
 
+## License
+
+Copyright © 2026 altrhombus
+
+Squelch is free software, licensed under the **GNU General Public License v3.0 or later** ([LICENSE](LICENSE)). You can redistribute it and/or modify it under the terms of the GPL as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY — see the license text for details.
+
+GPLv3 is required for license compatibility with [pyrtlsdr](https://github.com/pyrtlsdr/pyrtlsdr) (GPLv3), which Squelch uses as a library. HD Radio decoding uses [nrsc5](https://github.com/theori-io/nrsc5) (GPLv3) as a separate subprocess.
+
+---
+
 ## Troubleshooting
 
 **`extra callback data lost` in logs / audio dropouts**: The DSP thread is taking longer than the ~218 ms block interval. Likely causes: Pi is thermally throttling (check `vcgencmd measure_temp`), or an inadequate USB power supply. Adding a heatsink and ensuring a quality USB-C supply (≥ 3 A) usually resolves this.

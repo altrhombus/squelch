@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=68"]
+# >=77 for PEP 639 SPDX license expressions
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +8,9 @@ name = "squelch"
 version = "0.1.0"
 description = "Self-hosted SDR radio streamer for the Raspberry Pi — FM stereo, AM, HD Radio, and scanner with a mobile-friendly web UI"
 readme = "README.md"
-license = { file = "LICENSE" }
+# GPL-3.0-or-later: pyrtlsdr (imported as a library) is GPLv3, which is
+# incompatible with the GPL-2.0-only this project previously shipped.
+license = "GPL-3.0-or-later"
 requires-python = ">=3.11"
 authors = [{ name = "altrhombus" }]
 keywords = ["sdr", "rtl-sdr", "fm", "radio", "streaming", "raspberry-pi", "rds", "hd-radio"]

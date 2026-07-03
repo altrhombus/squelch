@@ -6,6 +6,13 @@ All notable changes to Squelch are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **License: GPL-2.0 → GPL-3.0-or-later.** The previous bare GPLv2 text had
+  no copyright notice and was incompatible with pyrtlsdr (GPLv3), which
+  Squelch imports as a library. All code to date is by the sole author, so
+  relicensing is clean.
+
 ### Added
 
 - Icecast2 output: pushes the AAC stream to an Icecast mount with live
