@@ -140,6 +140,12 @@ class DynamicPsAssembler:
         for exactly this kind of near-duplicate correction."""
         if self._provisioned:
             return None
+        # Two alternating pages are usually a *fragment* of a longer message
+        # whose other pages were lost to decode errors (seen live: ' Tomatoe'/
+        # 's - Lucy' looping while 'Planting' never survived).  Too risky to
+        # show without voting.
+        if len(cycle) < 3:
+            return None
         candidate = self._assemble(cycle)
         if not candidate or candidate == self._emitted:
             return None

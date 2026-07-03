@@ -102,6 +102,30 @@ def test_song_change_emits_new_text():
     assert "Halocene - Alexandra Savior" in texts[1:]
 
 
+def test_two_page_fragment_not_emitted_provisionally():
+    """A 2-page loop is usually a fragment of a longer message whose other
+    pages were lost to decode errors — voting only, no provisional emit."""
+    asm, clock = make()
+    fragment = [" Tomatoe", "s - Lucy"]   # observed live; real message longer
+    texts = feed_pages(asm, clock, fragment, repeats=2)
+    assert texts == []
+
+
+async def test_junk_parse_not_applied_to_metadata():
+    state = MetadataState()
+    clock = FakeClock()
+    state._ps_asm = DynamicPsAssembler(clock=clock)
+    state.update_tune(88.9e6, "fm")
+    # Even if the assembler emits a fragment, a 1-char artist must not land
+    fragment = [" Tomatoe", "s - Lucy"]
+    for _ in range(6):
+        for p in fragment:
+            state.update_rds(ps=p)
+            clock.tick(2.0)
+    assert state.artist is None or len(state.artist) >= 2
+    state.update_tune(91.1e6, "fm")
+
+
 def test_reverts_to_static_when_paging_stops():
     asm, clock = make()
     feed_pages(asm, clock, PAGES, repeats=2)

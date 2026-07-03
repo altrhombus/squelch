@@ -115,9 +115,14 @@ class MetadataState:
                 # Reassembled text fills artist/title only when the station
                 # provides no real RadioText (RT and RT+ are more reliable).
                 if res.text and not self._has_rt and not self._has_rtp:
-                    parsed = _parse_rt(res.text)
-                    if parsed != (self.artist, self.title):
-                        self.artist, self.title = parsed
+                    artist, title = _parse_rt(res.text)
+                    # Junk guard: a fragmentary cycle can assemble into
+                    # plausible-looking text ('s - Lucy Tomatoe' → artist
+                    # 's').  Require a real two-part result.
+                    if (artist and title
+                            and len(artist) >= 2 and len(title) >= 2
+                            and (artist, title) != (self.artist, self.title)):
+                        self.artist, self.title = artist, title
                         changed = True
             elif ps.strip() != self.station_name:
                 # Static (or not-yet-proven-dynamic) PS: show it immediately so
