@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
 
     os.makedirs(ART_DIR, exist_ok=True)
 
-    context.meta     = MetadataState()
+    context.meta     = MetadataState(config)
     context.streams  = StreamingManager()
     context.radio    = RadioManager(config, context.meta, context.streams)
     context.recorder = Recorder(config, context.meta)

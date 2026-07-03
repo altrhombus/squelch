@@ -18,6 +18,21 @@ recordings:
   # Directory where recordings are saved
   output_dir: "~/recordings"
 
+metadata:
+  # Look up cover art, Apple Music links, and canonical track info on
+  # Apple's iTunes Search API. Sends the artist/title you're listening to
+  # to Apple — disable for privacy. Disabling also disables order
+  # correction below (it needs the lookup response).
+  itunes_lookup: true
+  # Some stations transmit "Title - Artist" instead of "Artist - Title"
+  # (RDS defines no order). When the iTunes result shows the fields are
+  # reversed, swap them automatically.
+  order_correction: true
+  # Stations that page text through the PS field sometimes send show
+  # promos or DJ schedules instead of song info. Show these on the track
+  # line (like RadioText promos); garbled fragments are always filtered.
+  show_ps_messages: true
+
 # Uncomment to store the SQLite database (presets, history, recordings)
 # somewhere other than the repository root:
 # database:

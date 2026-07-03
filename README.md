@@ -315,7 +315,7 @@ Squelch is designed for a **trusted home LAN** and has **no authentication** —
 
 - **Do not port-forward Squelch to the internet.** For remote access, use a VPN (WireGuard, Tailscale) or put it behind a reverse proxy that adds authentication (e.g. Caddy/nginx with basic auth — note the `<audio>` stream and WebSocket must pass through too).
 - The server binds to `0.0.0.0` by default so other devices on your network can reach it; set `server.host` in `settings.yaml` to restrict this.
-- Optional cover-art lookup sends the currently playing artist/title to Apple's iTunes Search API.
+- Cover-art lookup sends the currently playing artist/title to Apple's iTunes Search API. Set `metadata.itunes_lookup: false` in `settings.yaml` to disable it.
 
 ---
 

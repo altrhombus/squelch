@@ -34,6 +34,10 @@ All notable changes to Squelch are documented here. The format follows
 - Art-source precedence: HD Radio LOT artwork always supersedes iTunes
   search artwork (including when LOT lands mid-lookup), and iTunes art now
   refreshes on song changes instead of sticking
+- `metadata:` config section: `itunes_lookup` (privacy opt-out; also
+  disables order correction), `order_correction`, and `show_ps_messages`
+  (display non-song PS messages like show promos on the track line —
+  garbled fragments are always filtered regardless)
 - Single-tuner HD Radio detection: IBOC digital sidebands (±135–195 kHz)
   are sniffed from the raw IQ while listening to analog FM; the UI shows a
   tappable "HD available" badge that switches to HD mode. Detection ratio

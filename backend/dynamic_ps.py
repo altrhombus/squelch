@@ -32,13 +32,15 @@ from typing import Optional
 
 class PsResult:
     """dynamic: PS is currently paging (not a station name).
-    text: newly reconstructed message, or None."""
+    text: newly reconstructed message, or None.
+    pages: number of pages the text was assembled from (evidence size)."""
 
-    __slots__ = ("dynamic", "text")
+    __slots__ = ("dynamic", "text", "pages")
 
-    def __init__(self, dynamic: bool, text: Optional[str] = None):
+    def __init__(self, dynamic: bool, text: Optional[str] = None, pages: int = 0):
         self.dynamic = dynamic
         self.text = text
+        self.pages = pages
 
 
 class DynamicPsAssembler:
@@ -96,11 +98,13 @@ class DynamicPsAssembler:
             self._last_change = now
             return PsResult(False)
 
-        text = None
+        text, pages = None, 0
         if changed:
             self._observe(ps, now)
-            text = self._extract()
-        return PsResult(True, text)
+            extracted = self._extract()
+            if extracted:
+                text, pages = extracted
+        return PsResult(True, text, pages)
 
     # ------------------------------------------------------------------
 
@@ -140,9 +144,9 @@ class DynamicPsAssembler:
             if not nbrs:
                 del self._edges[a]
 
-    def _extract(self) -> Optional[str]:
-        """Walk the strongest successor loop and emit it if it clears the
-        evidence bar (or once provisionally, for responsiveness)."""
+    def _extract(self) -> Optional[tuple]:
+        """Walk the strongest successor loop and emit (text, n_pages) if it
+        clears the evidence bar (or once provisionally, for responsiveness)."""
         if not self._edges:
             return None
 
@@ -178,7 +182,7 @@ class DynamicPsAssembler:
         if len(cycle) >= 2 and min(counts) >= self.EDGE_CONFIDENT:
             self._emitted = text
             self._provisioned = True
-            return text
+            return text, len(cycle)
         # Provisional: show the first plausible loop right away; the
         # evidence-backed walk corrects it within a few cycles if a page was
         # corrupted.  Two-page loops are usually fragments of a longer
@@ -186,7 +190,7 @@ class DynamicPsAssembler:
         if not self._provisioned and len(cycle) >= 3:
             self._emitted = text
             self._provisioned = True
-            return text
+            return text, len(cycle)
         return None
 
     @staticmethod

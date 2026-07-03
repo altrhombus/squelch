@@ -16,7 +16,21 @@ ART_PATH = os.path.join(ART_DIR, "current.jpg")
 
 
 class MetadataState:
-    def __init__(self):
+    def __init__(self, config: Optional[dict] = None):
+        meta_cfg = (config or {}).get("metadata") or {}
+        # iTunes Search lookup (cover art, Apple Music link, canonical track
+        # info).  Sends artist/title of the current track to Apple; disable
+        # for privacy.  Order correction depends on the lookup response, so
+        # it is implicitly off when the lookup is.
+        self._itunes_enabled: bool = bool(meta_cfg.get("itunes_lookup", True))
+        # Swap artist/title when the iTunes canonical names show the station
+        # transmits "Title - Artist" order.
+        self._order_correction: bool = bool(meta_cfg.get("order_correction", True))
+        # Show non-song PS messages (show promos, DJ schedules) on the track
+        # line, the way RadioText promos already display.  Garbled fragments
+        # are always rejected regardless of this setting.
+        self._show_ps_messages: bool = bool(meta_cfg.get("show_ps_messages", True))
+
         self.frequency: Optional[float] = None
         self.band: Optional[str] = None
         self.station_name: Optional[str] = None
@@ -130,16 +144,28 @@ class MetadataState:
                     changed = True
                 # Reassembled text fills artist/title only when the station
                 # provides no real RadioText (RT and RT+ are more reliable).
-                if res.text and not self._has_rt and not self._has_rtp:
+                # Junk guard (always on): 2-page loops are usually fragments
+                # of a longer message whose other pages were lost to decode
+                # errors — they assemble into plausible-looking garbage
+                # (' Tomatoes - Lucy' from "Planting Tomatoes - Lucy …").
+                # Require >=3 pages of structure before showing anything.
+                if (res.text and res.pages >= 3
+                        and not self._has_rt and not self._has_rtp):
                     artist, title = _parse_rt(res.text)
-                    # Junk guard: a fragmentary cycle can assemble into
-                    # plausible-looking text ('s - Lucy Tomatoe' → artist
-                    # 's').  Require a real two-part result.
-                    if (artist and title
-                            and len(artist) >= 2 and len(title) >= 2
-                            and (artist, title) != (self.artist, self.title)):
-                        self.artist, self.title = artist, title
-                        changed = True
+                    song_shaped = (artist and title
+                                   and len(artist) >= 2 and len(title) >= 2)
+                    if song_shaped:
+                        if (artist, title) != (self.artist, self.title):
+                            self.artist, self.title = artist, title
+                            changed = True
+                    elif self._show_ps_messages:
+                        # Non-song message (show promo, DJ schedule…) —
+                        # display on the title line like RadioText promos.
+                        # Collapse padding artifacts for display.
+                        msg = " ".join(res.text.split())
+                        if msg and (None, msg) != (self.artist, self.title):
+                            self.artist, self.title = None, msg
+                            changed = True
             elif ps.strip() != self.station_name:
                 # Static (or not-yet-proven-dynamic) PS: show it immediately so
                 # normal stations display their name without delay.
@@ -310,12 +336,14 @@ class MetadataState:
         """
         gen = self.tune_generation
         result = None
-        if self.artist and self.title and self._art_source != "lot":
+        if (self._itunes_enabled
+                and self.artist and self.title
+                and self._art_source != "lot"):
             from .art_lookup import fetch_itunes_art
             result = await fetch_itunes_art(self.artist, self.title)
 
         if result and gen == self.tune_generation:
-            if self._maybe_swap_artist_title(result):
+            if self._order_correction and self._maybe_swap_artist_title(result):
                 await self.broadcast()
             if (self._art_source != "lot"
                     and result["art_path"] != self._itunes_art_applied):
