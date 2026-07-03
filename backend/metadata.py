@@ -150,7 +150,12 @@ class MetadataState:
                 # (' Tomatoes - Lucy' from "Planting Tomatoes - Lucy …").
                 # Require >=3 pages of structure before showing anything.
                 if (res.text and res.pages >= 3
-                        and not self._has_rt and not self._has_rtp):
+                        and not self._has_rt and not self._has_rtp
+                        # A provisional (single-evidence) loop containing
+                        # multiple ' - ' separators almost certainly has a
+                        # corrupt page spliced in ('ing - Stthe feelthg -
+                        # St' observed live) — wait for the confident pass.
+                        and (res.confident or res.text.count(" - ") <= 1)):
                     artist, title = _parse_rt(res.text)
                     song_shaped = (artist and title
                                    and len(artist) >= 2 and len(title) >= 2)

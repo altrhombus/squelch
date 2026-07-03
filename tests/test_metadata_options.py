@@ -65,6 +65,29 @@ async def test_song_text_still_beats_promo_handling():
     state.update_tune(91.1e6, "fm")
 
 
+async def test_multiseparator_provisional_never_shown():
+    """A provisional loop with a corrupt page spliced in produces text with
+    two ' - ' separators ('ing - Stthe feelthg - St' observed live) — it
+    must wait for the confident pass; only the clean text ever displays."""
+    state = make_state()
+    clock = state._ps_asm._clock
+    corrupt_pass = ["ing - St", "the feel", "thg - St"]
+    clean = ["the feel", "ing - St", "eve Lacy"]
+    observed = set()
+    for p in corrupt_pass:
+        state.update_rds(ps=p)
+        observed.add((state.artist, state.title))
+        clock.tick(2.0)
+    for _ in range(4):
+        for p in clean:
+            state.update_rds(ps=p)
+            observed.add((state.artist, state.title))
+            clock.tick(2.0)
+    assert all(a != "ing" for a, _ in observed if a)
+    assert (state.artist, state.title) == ("the feeling", "Steve Lacy")
+    state.update_tune(91.1e6, "fm")
+
+
 async def test_short_fragments_never_shown_even_with_messages_on():
     """Garbled fragments are filtered regardless of the setting — the message
     path requires >=3 pages of evidence."""

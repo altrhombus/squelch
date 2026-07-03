@@ -33,14 +33,18 @@ from typing import Optional
 class PsResult:
     """dynamic: PS is currently paging (not a station name).
     text: newly reconstructed message, or None.
-    pages: number of pages the text was assembled from (evidence size)."""
+    pages: number of pages the text was assembled from (evidence size).
+    confident: True when every edge in the loop met the evidence bar
+    (False = provisional first look, may contain a corrupt page)."""
 
-    __slots__ = ("dynamic", "text", "pages")
+    __slots__ = ("dynamic", "text", "pages", "confident")
 
-    def __init__(self, dynamic: bool, text: Optional[str] = None, pages: int = 0):
+    def __init__(self, dynamic: bool, text: Optional[str] = None,
+                 pages: int = 0, confident: bool = False):
         self.dynamic = dynamic
         self.text = text
         self.pages = pages
+        self.confident = confident
 
 
 class DynamicPsAssembler:
@@ -98,13 +102,13 @@ class DynamicPsAssembler:
             self._last_change = now
             return PsResult(False)
 
-        text, pages = None, 0
+        text, pages, confident = None, 0, False
         if changed:
             self._observe(ps, now)
             extracted = self._extract()
             if extracted:
-                text, pages = extracted
-        return PsResult(True, text, pages)
+                text, pages, confident = extracted
+        return PsResult(True, text, pages, confident)
 
     # ------------------------------------------------------------------
 
@@ -182,7 +186,7 @@ class DynamicPsAssembler:
         if len(cycle) >= 2 and min(counts) >= self.EDGE_CONFIDENT:
             self._emitted = text
             self._provisioned = True
-            return text, len(cycle)
+            return text, len(cycle), True
         # Provisional: show the first plausible loop right away; the
         # evidence-backed walk corrects it within a few cycles if a page was
         # corrupted.  Two-page loops are usually fragments of a longer
@@ -190,7 +194,7 @@ class DynamicPsAssembler:
         if not self._provisioned and len(cycle) >= 3:
             self._emitted = text
             self._provisioned = True
-            return text, len(cycle)
+            return text, len(cycle), False
         return None
 
     @staticmethod
@@ -204,6 +208,24 @@ class DynamicPsAssembler:
         if max(padding) > 0:
             tail = max(range(len(pages)), key=padding.__getitem__)
             pages = pages[tail + 1:] + pages[:tail + 1]
+        else:
+            # No padded tail — the message is an exact multiple of 8 chars
+            # ("the feeling - Steve Lacy" is exactly 3 pages, observed live)
+            # and every rotation is equally valid structurally.  Prefer the
+            # rotation that reads like a song: exactly one ' - ' separator
+            # with the most balanced halves ('the feeling - Steve Lacy'
+            # beats 'ing - Steve Lacythe feel').
+            best = None
+            for k in range(len(pages)):
+                rot = pages[k:] + pages[:k]
+                text = "".join(rot).rstrip()
+                if text.count(" - ") == 1:
+                    a, _, b = text.partition(" - ")
+                    score = min(len(a.strip()), len(b.strip()))
+                    if best is None or score > best[0]:
+                        best = (score, rot)
+            if best:
+                pages = best[1]
         return "".join(pages).rstrip()
 
     def debug(self) -> dict:
