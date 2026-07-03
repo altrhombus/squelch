@@ -1,5 +1,7 @@
 # Squelch
 
+[![CI](https://github.com/altrhombus/squelch/actions/workflows/ci.yml/badge.svg)](https://github.com/altrhombus/squelch/actions/workflows/ci.yml)
+
 A self-hosted SDR radio streamer for the Raspberry Pi. Tune FM (stereo), AM, HD Radio, and scanner frequencies — stream to any device on your home network via a mobile-friendly web interface.
 
 - **AAC-LC audio stream** — chunked HTTP delivery, natively decoded by iOS/macOS/Chrome with no plugins or apps required
@@ -34,7 +36,7 @@ Software cannot overcome a weak signal, but a simple antenna upgrade makes a dra
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/YOUR_USERNAME/squelch.git
+git clone https://github.com/altrhombus/squelch.git
 cd squelch
 
 # 2. Run the install script (builds librtlsdr, installs Python deps, sets up systemd service)
@@ -239,6 +241,20 @@ These are in `backend/sdr/pipeline.py`.
 | Audio encoding | PyAV (AAC-LC, 128 kbps stereo / 48 kbps mono, ADTS) |
 | Database | SQLite via aiosqlite (presets, history, recordings) |
 | Frontend | Vanilla JS + CSS (no build step) |
+
+---
+
+## Development
+
+You don't need SDR hardware to hack on Squelch — the test suite drives the full FM demodulator with synthetic IQ signals:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest -q
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup details, code style, and how DSP changes are validated.
 
 ---
 

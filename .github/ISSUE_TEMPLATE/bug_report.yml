@@ -1,0 +1,36 @@
+name: Bug report
+description: Something isn't working
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: pi-model
+    attributes:
+      label: Hardware
+      description: Pi model and RTL-SDR version
+      placeholder: "Pi 4 4GB, RTL-SDR Blog v4"
+    validations:
+      required: true
+  - type: input
+    id: band-freq
+    attributes:
+      label: Band and frequency
+      placeholder: "FM 91.1, HD 101.9, AM 720…"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output of `sudo journalctl -u squelch -n 100` around the time of the problem
+      render: text
+  - type: input
+    id: browser
+    attributes:
+      label: Browser / client
+      description: If the problem is in the web UI or audio playback
+      placeholder: "Safari on iOS 19, Chrome 140 on macOS…"
