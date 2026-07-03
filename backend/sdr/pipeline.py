@@ -61,6 +61,10 @@ class RadioPipeline:
     def __init__(self, config: dict, metadata, streaming_manager):
         self._cfg      = config
         self._meta     = metadata
+        # Pipelines are created after update_tune() bumps the generation;
+        # late RDS callbacks from this pipeline after a retune carry this
+        # value and get dropped by MetadataState.
+        self._meta_gen = getattr(metadata, "tune_generation", 0)
         self._streams  = streaming_manager
         self._sdr      = None
         self._task: Optional[asyncio.Task] = None
@@ -387,4 +391,5 @@ class RadioPipeline:
             data.get("pi") or None,
             data.get("rtp_title"),   # RT+ structured title (None if not received)
             data.get("rtp_artist"),  # RT+ structured artist (None if not received)
+            self._meta_gen,          # dropped by MetadataState if a retune happened
         )

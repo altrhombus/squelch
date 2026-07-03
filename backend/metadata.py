@@ -37,6 +37,11 @@ class MetadataState:
         self.apple_music_url: Optional[str] = None
         # lifecycle state pushed to the frontend for status display
         self.state: str = "idle"           # idle | tuning | buffering | live
+        # Incremented on every tune.  Metadata callbacks from demod/decoder
+        # threads carry the generation they were created under; anything from
+        # a previous generation is stale (the old pipeline's queued callbacks
+        # can land after update_tune() cleared the fields) and is dropped.
+        self.tune_generation: int = 0
         self._last_history_key: Optional[str] = None
         self._history_save_task: Optional[asyncio.Task] = None
         self._has_rtp: bool = False   # True once RT+ structured data received
@@ -75,6 +80,7 @@ class MetadataState:
             self._history_save_task.cancel()
         self._history_save_task = None
 
+        self.tune_generation += 1
         self.frequency = frequency
         self.band = band
         self.station_name = None
@@ -101,7 +107,10 @@ class MetadataState:
         self.state = state
 
     def update_rds(self, ps: str = None, rt: str = None, pty: str = None, pi: str = None,
-                   rtp_title: str = None, rtp_artist: str = None):
+                   rtp_title: str = None, rtp_artist: str = None,
+                   gen: int = None):
+        if gen is not None and gen != self.tune_generation:
+            return   # stale callback from a previous station's pipeline
         changed = False
 
         if ps and ps.strip():
@@ -171,7 +180,10 @@ class MetadataState:
         hd_locked: bool = None,
         hd_channel: Optional[int] = None,
         hd_channels_available: Optional[list] = None,
+        gen: int = None,
     ):
+        if gen is not None and gen != self.tune_generation:
+            return   # stale callback from a previous station's decoder
         changed = False
         if station_name and station_name != self.station_name:
             self.station_name = station_name

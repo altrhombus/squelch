@@ -145,8 +145,10 @@ class RadioManager:
         _live       = [False]   # mutable flag for the pcm_cb closure
         _in_total   = [0]       # total input samples consumed — keeps output grid continuous
 
+        gen = self._meta.tune_generation   # captured after update_tune bumped it
+
         def meta_cb(data: dict):
-            self._meta.update_nrsc5(**data)
+            self._meta.update_nrsc5(gen=gen, **data)
 
         def pcm_cb(pcm_l: object, pcm_r: object):
             # Transition to "live" on the first audio chunk so the frontend

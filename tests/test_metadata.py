@@ -78,6 +78,30 @@ async def test_rtplus_suppresses_heuristic_rt():
     await asyncio.sleep(0)
 
 
+async def test_stale_generation_callbacks_dropped():
+    """A retune must invalidate queued RDS/nrsc5 callbacks from the previous
+    station's pipeline (observed live: previous station's track surviving
+    onto the new station)."""
+    state = MetadataState()
+    state.update_tune(91.7e6, "fm")
+    old_gen = state.tune_generation
+    state.update_rds(rt="Lizzy Borden - American Metal", gen=old_gen)
+    assert state.artist == "Lizzy Borden"
+
+    state.update_tune(106.9e6, "fm")   # user retunes; old pipeline winding down
+
+    # Late callback from the old pipeline arrives after the clear
+    state.update_rds(rt="Lizzy Borden - American Metal", gen=old_gen)
+    assert state.artist is None
+    state.update_nrsc5(artist="Stale", title="Stale", gen=old_gen)
+    assert state.artist is None
+
+    # Current-generation data still lands
+    state.update_rds(rt="New Artist - New Title", gen=state.tune_generation)
+    assert state.artist == "New Artist"
+    state.update_tune(88.5e6, "fm")
+
+
 async def test_update_tune_resets_metadata():
     state = MetadataState()
     state.update_rds(ps="WXYZ", rt="A - B", pty="Rock")
