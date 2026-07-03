@@ -13,7 +13,6 @@ No FIFO, no ffmpeg, no HLS directories.
 import asyncio
 import logging
 import math
-import os
 from typing import Optional
 
 import numpy as np

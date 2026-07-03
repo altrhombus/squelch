@@ -16,7 +16,6 @@ import asyncio
 import logging
 import os
 import re
-import struct
 import tempfile
 from typing import Callable, Optional
 

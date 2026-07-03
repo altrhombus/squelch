@@ -1,3 +1,6 @@
+# Pi deployment requirements (used by services/install.sh).
+# Canonical dependency metadata lives in pyproject.toml; this file adds
+# pyfftw, which is worthwhile on the Pi (NEON SIMD) but optional elsewhere.
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 aiosqlite>=0.20.0

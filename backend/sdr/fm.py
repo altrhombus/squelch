@@ -18,7 +18,7 @@ Filter state is maintained between blocks for seamless streaming.
 
 import numpy as np
 from concurrent.futures import wait as _futures_wait, FIRST_EXCEPTION
-from scipy.signal import butter, sosfilt, sosfilt_zi, lfilter, resample_poly, hilbert
+from scipy.signal import butter, sosfilt, lfilter, resample_poly, hilbert
 from scipy.fft import rfft as _rfft, irfft as _irfft
 
 # Use pyfftw as the scipy.fft backend if available — FFTW uses ARM NEON SIMD

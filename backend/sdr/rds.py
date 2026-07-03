@@ -20,7 +20,7 @@ invoked with a dict when any field changes.
 
 import logging
 import numpy as np
-from scipy.signal import butter, sosfilt, sosfilt_zi, resample_poly, hilbert
+from scipy.signal import butter, sosfilt, resample_poly, hilbert
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)

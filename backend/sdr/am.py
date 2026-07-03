@@ -9,7 +9,7 @@ NFM: narrowband FM discriminator — phase difference, 5 kHz deviation
 """
 
 import numpy as np
-from scipy.signal import butter, sosfilt, sosfilt_zi, resample_poly
+from scipy.signal import butter, sosfilt, resample_poly
 
 _SAMPLE_RATE = 1_200_000
 _AUDIO_RATE  = 48_000

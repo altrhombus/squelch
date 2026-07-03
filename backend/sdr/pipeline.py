@@ -8,7 +8,7 @@ AM / Scanner: 1.2 MHz sample rate, mono, AM uses direct sampling
 
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait, FIRST_EXCEPTION
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import numpy as np
