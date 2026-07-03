@@ -212,36 +212,41 @@ class DynamicPsAssembler:
             return text, len(cycle), False
         return None
 
-    @staticmethod
-    def _assemble(pages: list[str]) -> str:
+    @classmethod
+    def _assemble(cls, pages: list[str]) -> str:
         # The walk starts at an arbitrary point in the loop, so the pages may
-        # be rotated.  The message tail is the space-padded page (messages
-        # are rarely exact multiples of 8 chars); rotate it to the end.  Ties
-        # go to the page with the most padding — a mid-message page ends with
-        # at most one space (a word boundary), the true tail usually more.
-        padding = [len(p) - len(p.rstrip(" ")) for p in pages]
-        if max(padding) > 0:
-            tail = max(range(len(pages)), key=padding.__getitem__)
-            pages = pages[tail + 1:] + pages[:tail + 1]
-        else:
-            # No padded tail — the message is an exact multiple of 8 chars
-            # ("the feeling - Steve Lacy" is exactly 3 pages, observed live)
-            # and every rotation is equally valid structurally.  Prefer the
-            # rotation that reads like a song: exactly one ' - ' separator
-            # with the most balanced halves ('the feeling - Steve Lacy'
-            # beats 'ing - Steve Lacythe feel').
-            best = None
-            for k in range(len(pages)):
-                rot = pages[k:] + pages[:k]
-                text = "".join(rot).rstrip()
-                if text.count(" - ") == 1:
-                    a, _, b = text.partition(" - ")
-                    score = min(len(a.strip()), len(b.strip()))
-                    if best is None or score > best[0]:
-                        best = (score, rot)
-            if best:
-                pages = best[1]
+        # be rotated.  No single cue is reliable on its own (observed live:
+        # tail padding fails when the encoder pads *fields* to page
+        # boundaries — 'A Bomb  ' mid-message; separator balance fails on
+        # short artists), so every rotation is scored and the best wins.
+        best = max(range(len(pages)),
+                   key=lambda k: cls._rotation_score(pages[k:] + pages[:k]))
+        pages = pages[best:] + pages[:best]
         return "".join(pages).rstrip()
+
+    @staticmethod
+    def _rotation_score(rot: list[str]) -> tuple:
+        """Rank a rotation by how much it reads like a real message:
+        1. exactly one ' - ' separator (song-shaped)
+        2. no case-jams — a lowercase→UPPERCASE join at a page boundary
+           ('MetricTime') means two words were fused by a wrong rotation
+        3. tail padding — the true final page usually carries the pad spaces
+        4. balanced separator halves ('the feeling - Steve Lacy' beats
+           'ing - Steve Lacythe feel')
+        """
+        text = "".join(rot).rstrip()
+        one_sep = 1 if text.count(" - ") == 1 else 0
+        jams = sum(
+            1
+            for a, b in zip(rot, rot[1:])
+            if a[-1:].islower() and b[:1].isupper()
+        )
+        balance = 0
+        if one_sep:
+            left, _, right = text.partition(" - ")
+            balance = min(len(left.strip()), len(right.strip()))
+        tail_pad = len(rot[-1]) - len(rot[-1].rstrip(" "))
+        return (one_sep, -jams, tail_pad, balance)
 
     def debug(self) -> dict:
         """Assembler state for the diagnostics feed — raw pages are the only

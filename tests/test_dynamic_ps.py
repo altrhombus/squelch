@@ -150,6 +150,19 @@ async def test_junk_parse_not_applied_to_metadata():
     state.update_tune(91.1e6, "fm")
 
 
+def test_field_padded_message_rotates_correctly():
+    """Some encoders pad fields to page boundaries, putting padding
+    *mid-message* ('A Bomb  ' for 'Time Is A Bomb  - Metric', observed
+    live emitting '- MetricTime Is A Bomb').  The case-jam cue must beat
+    the misleading tail-padding cue."""
+    pages = ["Time Is ", "A Bomb  ", "- Metric"]
+    for offset in range(3):
+        rotated = pages[offset:] + pages[:offset]
+        asm, clock = make()
+        texts = feed_pages(asm, clock, rotated, repeats=4)
+        assert texts[-1] == "Time Is A Bomb  - Metric", f"offset={offset}: {texts}"
+
+
 def test_exact_page_multiple_rotates_to_plausible_split():
     """'the feeling - Steve Lacy' is exactly 3 pages — no padded tail, so
     rotation is ambiguous; the balanced-split heuristic must pick the right
