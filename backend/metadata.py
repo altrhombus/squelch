@@ -137,45 +137,50 @@ class MetadataState:
         if ps and ps.strip():
             res = self._ps_asm.feed(ps)
             if res.dynamic:
-                # The station pages song text through PS — it is not a station
-                # name.  Clear any page fragment we optimistically displayed.
+                # The station pages song text through PS too fast for it to
+                # be a station name — clear any fragment we optimistically
+                # displayed.
                 if self.station_name is not None:
                     self.station_name = None
                     changed = True
-                # Reassembled text fills artist/title only when the station
-                # provides no real RadioText (RT and RT+ are more reliable).
-                # Junk guard (always on): 2-page loops are usually fragments
-                # of a longer message whose other pages were lost to decode
-                # errors — they assemble into plausible-looking garbage
-                # (' Tomatoes - Lucy' from "Planting Tomatoes - Lucy …").
-                # Require >=3 pages of structure before showing anything.
-                if (res.text and res.pages >= 3
-                        and not self._has_rt and not self._has_rtp
-                        # A provisional (single-evidence) loop containing
-                        # multiple ' - ' separators almost certainly has a
-                        # corrupt page spliced in ('ing - Stthe feelthg -
-                        # St' observed live) — wait for the confident pass.
-                        and (res.confident or res.text.count(" - ") <= 1)):
-                    artist, title = _parse_rt(res.text)
-                    song_shaped = (artist and title
-                                   and len(artist) >= 2 and len(title) >= 2)
-                    if song_shaped:
-                        if (artist, title) != (self.artist, self.title):
-                            self.artist, self.title = artist, title
-                            changed = True
-                    elif self._show_ps_messages:
-                        # Non-song message (show promo, DJ schedule…) —
-                        # display on the title line like RadioText promos.
-                        # Collapse padding artifacts for display.
-                        msg = " ".join(res.text.split())
-                        if msg and (None, msg) != (self.artist, self.title):
-                            self.artist, self.title = None, msg
-                            changed = True
             elif ps.strip() != self.station_name:
-                # Static (or not-yet-proven-dynamic) PS: show it immediately so
-                # normal stations display their name without delay.
+                # Static (or slow-paging) PS: show it immediately so normal
+                # stations display their name without delay.
                 self.station_name = ps.strip()
                 changed = True
+
+            # Reassembled text applies regardless of the display regime —
+            # slow pagers (one page per 30-60 s) never register as
+            # "dynamic" but still deliver song info once a full cycle of
+            # evidence exists.  Only when the station provides no real
+            # RadioText (RT and RT+ are more reliable).
+            # Junk guard (always on): 2-page loops are usually fragments
+            # of a longer message whose other pages were lost to decode
+            # errors — they assemble into plausible-looking garbage
+            # (' Tomatoes - Lucy' from "Planting Tomatoes - Lucy …").
+            # Require >=3 pages of structure before showing anything.
+            if (res.text and res.pages >= 3
+                    and not self._has_rt and not self._has_rtp
+                    # A provisional (single-evidence) loop containing
+                    # multiple ' - ' separators almost certainly has a
+                    # corrupt page spliced in ('ing - Stthe feelthg - St'
+                    # observed live) — wait for the confident pass.
+                    and (res.confident or res.text.count(" - ") <= 1)):
+                artist, title = _parse_rt(res.text)
+                song_shaped = (artist and title
+                               and len(artist) >= 2 and len(title) >= 2)
+                if song_shaped:
+                    if (artist, title) != (self.artist, self.title):
+                        self.artist, self.title = artist, title
+                        changed = True
+                elif self._show_ps_messages:
+                    # Non-song message (show promo, DJ schedule…) —
+                    # display on the title line like RadioText promos.
+                    # Collapse padding artifacts for display.
+                    msg = " ".join(res.text.split())
+                    if msg and (None, msg) != (self.artist, self.title):
+                        self.artist, self.title = None, msg
+                        changed = True
 
         # RT+ structured tags (IEC 62106 Annex A) take priority over heuristic
         # text splitting.  Once a station provides RT+ data, suppress the

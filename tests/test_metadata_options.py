@@ -65,6 +65,20 @@ async def test_song_text_still_beats_promo_handling():
     state.update_tune(91.1e6, "fm")
 
 
+async def test_slow_pager_keeps_name_and_gains_track():
+    """Slow pagers show PS fragments as the station name (car-radio
+    behavior) but the track must still populate once assembled."""
+    state = make_state()
+    clock = state._ps_asm._clock
+    for _ in range(3):
+        for p in SONG:
+            state.update_rds(ps=p)
+            clock.tick(40.0)
+    assert (state.artist, state.title) == ("Daughter of Empire", "Humbird")
+    assert state.station_name == "bird"   # last fragment still shown as name
+    state.update_tune(91.1e6, "fm")
+
+
 async def test_multiseparator_provisional_never_shown():
     """A provisional loop with a corrupt page spliced in produces text with
     two ' - ' separators ('ing - Stthe feelthg - St' observed live) — it

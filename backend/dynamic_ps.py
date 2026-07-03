@@ -50,10 +50,14 @@ class PsResult:
 class DynamicPsAssembler:
     DYNAMIC_CHANGES = 3      # distinct PS changes inside WINDOW_SECS → dynamic
     WINDOW_SECS     = 20.0
-    STATIC_SECS     = 15.0   # unchanged this long → back to static
+    STATIC_SECS     = 15.0   # unchanged this long → PS trusted as a name again
     MAX_WALK        = 24     # bound on message length in pages
     EDGE_CONFIDENT  = 2      # evidence needed on every edge for a firm emit
-    PRUNE_SECS      = 60.0   # forget edges not reinforced within this window
+    # Evidence horizon.  Slow pagers exist (observed live: one page per
+    # 30-60 s, a full cycle taking ~4 min) — edges must survive several
+    # cycles at that rate.  Stale-message evidence is handled by the
+    # novel-page reset, not by aggressive pruning.
+    PRUNE_SECS      = 900.0
     NOVEL_RESET     = 3      # consecutive never-seen pages → message changed
     DEBUG_PAGES     = 16     # raw pages kept for the diagnostics feed
 
@@ -89,26 +93,28 @@ class DynamicPsAssembler:
             self._page_log.append(ps)
             del self._page_log[:-self.DEBUG_PAGES]
 
-        if not self._dynamic:
-            if len(self._change_times) >= self.DYNAMIC_CHANGES:
-                self._dynamic = True
-                self._prev_page = ps
-            return PsResult(False)
-
-        # Dynamic mode: a long-stable PS means the station went back to a name
-        if now - self._last_change > self.STATIC_SECS:
-            self.reset()
-            self._last_ps = ps
-            self._last_change = now
-            return PsResult(False)
-
+        # Assembly runs on every transition regardless of paging speed —
+        # slow pagers (one page per 30-60 s) never qualify as "dynamic" for
+        # display purposes but their messages still accumulate in the graph
+        # and emit once a full cycle of evidence exists.
         text, pages, confident = None, 0, False
         if changed:
             self._observe(ps, now)
             extracted = self._extract()
             if extracted:
                 text, pages, confident = extracted
-        return PsResult(True, text, pages, confident)
+
+        # Display regime: "dynamic" means PS is changing too fast to be a
+        # station name.  Fast pagers flip this on (name gets cleared); a
+        # long-stable PS flips it back off.  The graph is untouched either
+        # way — slow pagers pause for minutes between pages.
+        if self._dynamic:
+            if now - self._last_change > self.STATIC_SECS:
+                self._dynamic = False
+        elif len(self._change_times) >= self.DYNAMIC_CHANGES:
+            self._dynamic = True
+
+        return PsResult(self._dynamic, text, pages, confident)
 
     # ------------------------------------------------------------------
 

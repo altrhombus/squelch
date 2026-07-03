@@ -158,6 +158,21 @@ def test_exact_page_multiple_rotates_to_plausible_split():
         assert texts[-1] == "the feeling - Steve Lacy", f"offset={offset}: {texts}"
 
 
+def test_slow_pager_assembles_without_dynamic_mode():
+    """Stations paging at one page per 30-60 s (observed live) never qualify
+    as 'dynamic' for display, but the graph must still assemble their
+    messages across the long horizon."""
+    asm, clock = make()
+    results = []
+    for _ in range(3):
+        for p in PAGES:
+            results.append(asm.feed(p))
+            clock.tick(40.0)     # far slower than the dynamic threshold
+    texts = [r.text for r in results if r.text]
+    assert "Daughter of Empire - Humbird" in texts
+    assert all(r.dynamic is False for r in results)   # display stays static
+
+
 def test_reverts_to_static_when_paging_stops():
     asm, clock = make()
     feed_pages(asm, clock, PAGES, repeats=2)
