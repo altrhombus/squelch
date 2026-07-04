@@ -105,10 +105,12 @@ class NfmDemodulator:
     def __init__(self):
         self._decim = StatefulResampler(1, _DECIM)
         # Channel filter before the discriminator: Carson bandwidth for
-        # 5 kHz deviation + ~3 kHz voice ≈ ±8 kHz.  Without it the
+        # 5 kHz deviation + ~3 kHz voice ≈ ±8 kHz, opened to ±10 kHz for
+        # tolerance to residual tuning offset (NOAA WX channels are 25 kHz
+        # apart, so selectivity is unaffected).  Without it the
         # discriminator sees the full ±24 kHz decimated passband and
         # adjacent-channel energy lands directly in the audio.
-        self._chan_sos = butter(6, 8_000, 'lowpass', fs=_AUDIO_RATE, output='sos')
+        self._chan_sos = butter(6, 10_000, 'lowpass', fs=_AUDIO_RATE, output='sos')
         self._chan_zi  = _zero_zi_c(self._chan_sos)
         # Audio lowpass 4 kHz to suppress inter-channel noise
         self._lp_sos = butter(4, 4_000, 'lowpass', fs=_AUDIO_RATE, output='sos')

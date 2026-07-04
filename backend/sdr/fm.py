@@ -653,7 +653,13 @@ class FmStereoDemodulator:
         r32       = r.astype(np.float32)
         rms_pre   = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
         in_noise  = rms_pre <= _AGC_GATE
-        quality = self._qual_smooth
+        # Wiener floor quality: blend, exactly as originally tuned — except
+        # in forced-mono mode, where blend is pinned to 0 and the smoothed
+        # noise gate stands in (the A7 fix).  Driving AUTO mode from the
+        # noise gate deepened the floor on strong stations (gate ~0.9 vs
+        # blend ~0.65) and resurfaced the harsh-sibilant artifact the
+        # −12 dB floor was tuned against (heard live on headphones).
+        quality = self._qual_smooth if self._stereo_mode == "mono" else blend
         if self._ss_executor is not None:
             # Submit L and R to the dedicated 2-worker pool so they run on
             # separate cores.  concurrent.futures.wait() blocks this executor

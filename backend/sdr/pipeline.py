@@ -233,6 +233,16 @@ class RadioPipeline:
         block = _BLOCK if band in ("fm", "hd") else _AM_BLOCK
 
         sdr.sample_rate = sr
+        # Apply the dongle's crystal correction BEFORE tuning.  This was
+        # never wired up: harmless on wideband FM (a few kHz against 75 kHz
+        # deviation) but fatal on NFM/WX, where the same offset pushes the
+        # signal outside the ±10 kHz channel filter.
+        ppm = int((self._cfg.get("sdr") or {}).get("ppm_correction", 0) or 0)
+        if ppm:
+            try:
+                sdr.freq_correction = ppm
+            except Exception as e:
+                logger.warning("ppm correction (%d) failed: %s", ppm, e)
         sdr.center_freq = self._freq
 
         if band == "am":
