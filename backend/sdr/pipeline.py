@@ -106,6 +106,10 @@ class RadioPipeline:
         # True until the next encoded chunk should flip state to "live"
         # (set on start and retune; consumed in the session loop).
         self._announce_live = True
+        # AFC state (narrowband bands only) — reset per SDR session.
+        self._afc_hops_left = 0
+        self._afc_hist: list = []
+        self._afc_last_updates = -1
 
     # ------------------------------------------------------------------
     # Public API
@@ -277,6 +281,13 @@ class RadioPipeline:
         logger.info("SDR session started: %.3f MHz [%s] at %.1f MHz SR",
                     self._freq / 1e6, band, sr / 1e6)
 
+        # AFC for narrowband channels: a generic dongle's crystal error
+        # (~100 ppm ≈ 16 kHz at 162 MHz) can park the signal outside the
+        # channel filter entirely.  Up to two recentring hops per session.
+        self._afc_hops_left = 2 if band in ("wx", "scanner") else 0
+        self._afc_hist = []
+        self._afc_last_updates = -1
+
         hold_blocks = 0   # blocks since last gain step
         try:
             async for iq in sdr.stream(block):
@@ -300,6 +311,9 @@ class RadioPipeline:
                     if hold_blocks >= _GAIN_HOLD_BLOCKS:
                         hold_blocks = 0
                         self._gain_step(sdr)
+
+                if self._afc_hops_left > 0 and self._demod is not None:
+                    self._afc_step(sdr)
         finally:
             try:
                 await sdr.stop()
@@ -342,6 +356,44 @@ class RadioPipeline:
         sdr.gain = avail[g_idx]
         self._current_gain = avail[g_idx]
         logger.info("Gain %s %.1f dB (%s)", direction, avail[g_idx], reason)
+
+    def _afc_step(self, sdr):
+        """One AFC decision (narrowband bands, called per block).
+
+        Recentres the tuner on the measured carrier when four consecutive
+        FRESH offset readings agree within 400 Hz (a real carrier — noise
+        centroids scatter by thousands of Hz) and their mean exceeds
+        1 kHz.  Stale readings (squelched, no new blocks through the
+        demod) are ignored, so AFC never chases a frozen estimate.
+        """
+        est = getattr(self._demod, "carrier_offset", None)
+        if est is None:
+            self._afc_hops_left = 0
+            return
+        if est.updates == self._afc_last_updates:
+            return
+        self._afc_last_updates = est.updates
+        self._afc_hist.append(est.offset_hz)
+        if len(self._afc_hist) < 4:
+            return
+        del self._afc_hist[:-4]
+        if max(self._afc_hist) - min(self._afc_hist) > 400.0:
+            return   # unstable — noise floor, not a carrier
+        mean = sum(self._afc_hist) / len(self._afc_hist)
+        if abs(mean) < 1_000.0:
+            self._afc_hops_left = 0   # centred — done for this session
+            return
+        try:
+            sdr.center_freq = sdr.center_freq + mean
+        except Exception as e:
+            logger.warning("AFC retune failed: %s", e)
+            self._afc_hops_left = 0
+            return
+        self._afc_hops_left -= 1
+        self._afc_hist.clear()
+        est.reset()
+        logger.info("AFC: carrier %+.0f Hz off — recentred (%d hop(s) left)",
+                    mean, self._afc_hops_left)
 
     def _process(self, iq: np.ndarray, encoder) -> Optional[bytes]:
         """Runs in executor thread: demodulate → encode → return AAC bytes."""

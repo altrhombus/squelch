@@ -71,6 +71,23 @@ All notable changes to Squelch are documented here. The format follows
 
 ### Added
 
+- AFC for narrowband bands (WX/scanner): the pipeline recentres the tuner
+  on the measured carrier when a stable offset > 1 kHz is detected (up to
+  two hops per session, noise- and squelch-proof), so an uncalibrated
+  dongle's crystal error no longer parks NFM/AM-scanner signals outside
+  the channel filter. `ppm_correction` becomes an optimisation rather
+  than a requirement.
+- Spectral noise reduction on the NFM path (WX/scanner voice): the FM
+  Wiener subtractor driven by a discriminator noise-floor measurement
+  above the voice band (6–20 kHz) — ~7 dB cleaner speech gaps in synthetic
+  tests. Known caveat: stationary tones longer than ~1.4 s (NOAA alert
+  tone) ride at the −12 dB floor but stay clearly audible post-AGC.
+- ppm self-calibration diagnostics: `diag.pilot_offset_hz` (FM — the
+  19 kHz pilot is transmitter-exact to ±2 Hz) and `diag.carrier_offset_hz`
+  (NFM/WX — power-centroid carrier offset; NOAA carriers are exact),
+  measured live to calibrate `settings.yaml` `ppm_correction` without
+  stopping the service. Also fixed: `ppm_correction` was read from config
+  but never applied to the SDR.
 - Dynamic-PS reassembly: stations that page now-playing text through the RDS
   PS field in 8-character chunks (instead of using RadioText) now get
   artist/title reconstructed via a successor-graph model (page-to-page

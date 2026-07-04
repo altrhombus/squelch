@@ -79,6 +79,110 @@ def test_nfm_carrier_offset_estimator():
     assert abs(demod.last_carrier_offset_hz - 7_000) < 100
 
 
+def test_nfm_noise_reduction_lowers_noise_floor():
+    """The spectral subtractor on the NFM path must cut inter-formant
+    noise without touching the programme tone (SNR ratio, so the two
+    runs' AGC differences cancel).
+
+    The tone is burst-modulated at word cadence (250 ms on/off): MinStat
+    keys on the gaps between speech to find the noise floor — a
+    never-pausing tone is its documented blind spot, not the use case."""
+    rng = np.random.default_rng(3)
+    n = BLOCK * 16   # MinStat needs ~1.4 s to fill its window
+    t = np.arange(n) / _SAMPLE_RATE
+    bursts = ((t % 0.5) < 0.25).astype(np.float64)   # last block falls on ON
+    mod = bursts * np.sin(2 * np.pi * 1_000 * t)
+    phase = 2 * np.pi * 4_000 * np.cumsum(mod) / _SAMPLE_RATE
+    noise = 0.05 * (rng.standard_normal(n) + 1j * rng.standard_normal(n))
+    iq = (0.3 * np.exp(1j * phase) + noise).astype(np.complex64)
+
+    def run(nr: bool):
+        d = NfmDemodulator(noise_reduction=nr)
+        return [d.process(iq[b * BLOCK:(b + 1) * BLOCK]) for b in range(16)]
+
+    def band_power(x, lo, hi):
+        s = np.abs(np.fft.rfft(x * np.hanning(len(x)))) ** 2
+        f = np.fft.rfftfreq(len(x), 1 / AUDIO_RATE)
+        return float(s[(f > lo) & (f < hi)].mean())
+
+    clean, raw = run(True), run(False)
+    # Block 12 (~1.31–1.42 s) sits inside an OFF gap — residual hiss the
+    # NR should crush; block 15 is ON — the tone it must preserve.
+    # Ratio form cancels each run's overall AGC scaling.
+    snr_nr  = band_power(clean[15], 950, 1050) / band_power(clean[12], 500, 3400)
+    snr_raw = band_power(raw[15],   950, 1050) / band_power(raw[12],   500, 3400)
+    assert snr_nr > snr_raw * 2, f"NR gained only {10*np.log10(snr_nr/snr_raw):.1f} dB"
+
+
+class _FakeSdr:
+    def __init__(self, center=162.4e6):
+        self.center_freq = center
+
+
+def _afc_pipeline():
+    from backend.sdr.pipeline import RadioPipeline
+
+    class _Est:
+        offset_hz = 0.0
+        updates = 0
+        def reset(self):
+            pass
+
+    class _Demod:
+        pass
+
+    p = RadioPipeline({}, None, None)
+    est = _Est()
+    d = _Demod()
+    d.carrier_offset = est
+    p._demod = d
+    p._afc_hops_left = 2
+    p._afc_hist = []
+    p._afc_last_updates = -1
+    return p, est
+
+
+def test_afc_recenters_on_stable_offset():
+    import asyncio
+    p, est = _afc_pipeline()
+    try:
+        sdr = _FakeSdr()
+        est.offset_hz = -16_360.0
+        for _ in range(4):
+            est.updates += 1
+            p._afc_step(sdr)
+        assert abs(sdr.center_freq - (162.4e6 - 16_360)) < 1.0
+        assert p._afc_hops_left == 1
+    finally:
+        asyncio.run(p.close())
+
+
+def test_afc_holds_on_noise_stale_and_centred():
+    import asyncio
+    p, est = _afc_pipeline()
+    try:
+        sdr = _FakeSdr()
+        # Unstable readings (noise centroids scatter): no hop.
+        for off in (-3_000.0, 5_000.0, -12_000.0, 800.0, 9_000.0):
+            est.offset_hz = off
+            est.updates += 1
+            p._afc_step(sdr)
+        assert sdr.center_freq == 162.4e6 and p._afc_hops_left == 2
+        # Stale readings (updates frozen, e.g. squelched): ignored.
+        est.offset_hz = -16_000.0
+        for _ in range(8):
+            p._afc_step(sdr)
+        assert sdr.center_freq == 162.4e6
+        # Stable and already centred: AFC declares itself done.
+        est.offset_hz = 120.0
+        for _ in range(4):
+            est.updates += 1
+            p._afc_step(sdr)
+        assert sdr.center_freq == 162.4e6 and p._afc_hops_left == 0
+    finally:
+        asyncio.run(p.close())
+
+
 def test_wx_band_routes_to_nfm():
     """NOAA weather is NFM — routing it through the WFM stereo demod
     produced ~15× under-deviated audio plus 10 kHz of noise bandwidth."""
