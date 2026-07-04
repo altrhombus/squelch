@@ -395,7 +395,12 @@ class RdsDecoder:
             if abs(err) > 1.5 and (not self._synced or self._bad_blocks >= 3):
                 step = float(err)
             else:
-                step = float(np.clip(0.2 * err, -0.5, 0.5))
+                # Slew ceiling ±1.0/block ≈ 4.6 samples/s — enough to track
+                # a >200 ppm uncorrected dongle clock (drift in samples/s
+                # equals the pilot offset in Hz; measured −4 Hz live)
+                # without falling back on snap-resyncs that each cost a
+                # bit slip and a group.
+                step = float(np.clip(0.3 * err, -1.0, 1.0))
             self._samp_phase += step
             if self._samp_phase >= 16.0:              # deliberate bit slip;
                 self._samp_phase -= 16.0              # sync recovers

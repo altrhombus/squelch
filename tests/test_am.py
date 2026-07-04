@@ -65,6 +65,20 @@ def test_nfm_recovers_voice_tone():
     assert abs(freqs[np.argmax(spectrum)] - 1_000) < 30
 
 
+def test_nfm_carrier_offset_estimator():
+    """A carrier 7 kHz off the tuned frequency must be reported — this is
+    the ppm-calibration instrument for WX (NOAA carriers are exact)."""
+    n = BLOCK * 4
+    t = np.arange(n) / _SAMPLE_RATE
+    phase = 2 * np.pi * 5_000 * np.cumsum(np.sin(2 * np.pi * 1_000 * t)) / _SAMPLE_RATE
+    iq = (0.3 * np.exp(1j * (2 * np.pi * 7_000 * t + phase))).astype(np.complex64)
+
+    demod = NfmDemodulator()
+    for b in range(4):
+        demod.process(iq[b * BLOCK:(b + 1) * BLOCK])
+    assert abs(demod.last_carrier_offset_hz - 7_000) < 100
+
+
 def test_wx_band_routes_to_nfm():
     """NOAA weather is NFM — routing it through the WFM stereo demod
     produced ~15× under-deviated audio plus 10 kHz of noise bandwidth."""

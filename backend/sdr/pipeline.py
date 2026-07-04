@@ -430,6 +430,10 @@ class RadioPipeline:
             # ppm calibration aid: crystal ppm ≈ −pilot_offset_hz / 0.019
             d["pilot_offset_hz"] = round(
                 float(getattr(self._demod, "last_pilot_offset_hz", 0.0)), 3)
+        elif hasattr(self._demod, "last_carrier_offset_hz"):
+            # NFM/WX: measured carrier offset (Hz) — exact on NOAA channels
+            d["carrier_offset_hz"] = round(
+                float(self._demod.last_carrier_offset_hz), 1)
         if self._hd_detect is not None:
             d["hd_ratio"] = round(self._hd_detect.ratio, 3)   # calibration aid
         if self._current_gain is not None:

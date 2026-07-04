@@ -101,6 +101,12 @@ class NfmDemodulator:
     AUDIO_RATE  = _AUDIO_RATE
 
     last_iq_rms: float = 0.0   # read by pipeline.py for squelch
+    # Strongest carrier's offset from the tuned frequency (Hz) within the
+    # ±24 kHz decimated passband — ppm-calibration aid.  NOAA WX carriers
+    # are frequency-exact, so on a WX channel this reads the dongle's
+    # total tuning error directly, even when the signal sits outside the
+    # channel filter and the audio is pure static.
+    last_carrier_offset_hz: float = 0.0
 
     def __init__(self):
         self._decim = StatefulResampler(1, _DECIM)
@@ -116,6 +122,7 @@ class NfmDemodulator:
         self._lp_sos = butter(4, 4_000, 'lowpass', fs=_AUDIO_RATE, output='sos')
         self._lp_zi  = _zero_zi(self._lp_sos)
         self._prev   = None    # last channel sample — discriminator carry
+        self._off_init = False  # carrier-offset EMA snaps on first block
         self._gain   = 1.0
 
     def process(self, iq: np.ndarray) -> np.ndarray:
@@ -124,6 +131,23 @@ class NfmDemodulator:
         decimated = self._decim.process(iq)
         if decimated.size == 0:
             return np.zeros(0, dtype=np.float32)
+
+        # Carrier offset via power centroid over the full ±24 kHz decimated
+        # passband (pre-channel-filter, so a mistuned carrier is still
+        # visible).  The centroid, not the peak: an FM spectrum under
+        # modulation spreads across ±deviation and its carrier line can
+        # vanish (Bessel null), but the spectrum stays symmetric about the
+        # carrier, so the power centroid of the significant bins reads the
+        # true offset regardless of modulation.
+        p = np.abs(np.fft.fft(decimated * np.hanning(len(decimated)))) ** 2
+        mask = p > 0.1 * p.max()
+        freqs = np.fft.fftfreq(len(decimated), 1.0 / _AUDIO_RATE)
+        off = float(np.sum(freqs[mask] * p[mask]) / np.sum(p[mask]))
+        if self._off_init:
+            self.last_carrier_offset_hz += 0.3 * (off - self.last_carrier_offset_hz)
+        else:
+            self.last_carrier_offset_hz = off
+            self._off_init = True
 
         chan, self._chan_zi = sosfilt(self._chan_sos, decimated, zi=self._chan_zi)
 
