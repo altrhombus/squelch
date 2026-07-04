@@ -20,12 +20,13 @@ F_LEFT, F_RIGHT = 1000.0, 2500.0
 AUDIO_RATE = 48_000
 
 
-def make_iq(stereo: bool, amp_iq: float = 0.3, tone_amp: float = 0.5) -> np.ndarray:
+def make_iq(stereo: bool, amp_iq: float = 0.3, tone_amp: float = 0.5,
+            pilot_hz: float = 19_000.0) -> np.ndarray:
     n = BLOCK * N_BLOCKS
     t = np.arange(n) / _SAMPLE_RATE
     left = tone_amp * np.sin(2 * np.pi * F_LEFT * t)
     right = tone_amp * np.sin(2 * np.pi * F_RIGHT * t)
-    theta = 2 * np.pi * 19_000 * t
+    theta = 2 * np.pi * pilot_hz * t
     if stereo:
         mpx = (0.45 * (left + right)
                + 0.45 * (left - right) * np.cos(2 * theta)   # DSB-SC at 38 kHz
@@ -125,6 +126,14 @@ class TestMono:
 # ---------------------------------------------------------------------------
 # Forced modes
 # ---------------------------------------------------------------------------
+
+def test_pilot_offset_estimator_reads_crystal_error():
+    """A pilot 0.8 Hz off nominal (≈ −42 ppm crystal) must be reported by
+    the diag estimator — this drives ppm_correction self-calibration."""
+    iq = make_iq(stereo=True, pilot_hz=19_000.8)
+    demod, _, _ = run_demod(iq)
+    assert abs(demod.last_pilot_offset_hz - 0.8) < 0.1
+
 
 def test_stereo_mode_mono_forces_identical_channels():
     iq = make_iq(stereo=True)

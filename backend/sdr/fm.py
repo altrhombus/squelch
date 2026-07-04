@@ -351,6 +351,7 @@ class FmStereoDemodulator:
     last_noise_rms:    float = 0.0   # discriminator noise floor (65-90 kHz band)
     last_blend:        float = 0.0   # stereo blend factor 0-1
     last_audio_rms:    float = 0.0   # decoded output level
+    last_pilot_offset_hz: float = 0.0  # observed pilot offset from 19 kHz (ppm calibration aid)
 
     def __init__(self, deemphasis_us: int = 75, stereo_mode: str = "auto", ss_executor=None):
         # --- audio bandpass/lowpass filter coefficients (SOS) ---
@@ -431,6 +432,10 @@ class FmStereoDemodulator:
         # --- physics noise floor state ---
         self._noise_rms_smooth = 0.0    # block-level EMA of discriminator noise_rms
         self._noise_rms_init   = False  # snaps on first block; same pattern as _blend_init
+
+        # --- pilot frequency-offset estimator state ---
+        self._pilot_off_smooth = 0.0
+        self._pilot_off_init   = False
 
         # --- signal-quality smoothing for the Wiener floor ---
         # noise_gate (SNR from the 65-90 kHz discriminator noise band) is the
@@ -561,6 +566,22 @@ class FmStereoDemodulator:
         # gate thresholds below are unchanged.
         pilot_rms = float(np.sqrt(np.mean(np.abs(pilot_a) ** 2) / 2.0))
         iq_rms    = float(np.sqrt(np.mean(np.abs(iq) ** 2)))
+
+        # Pilot frequency offset — self-calibration aid for ppm_correction.
+        # The transmitted pilot is exactly 19 kHz and the dongle's LO and
+        # ADC clock share one crystal, so the observed offset IS the
+        # crystal error: offset_hz ≈ −19000 · ppm · 1e-6.  The mean phasor
+        # of sample-to-sample rotation is magnitude-weighted (robust in
+        # noise); gated on pilot presence so mono stations report nothing.
+        if pilot_rms > 0.02:
+            dphi = float(np.angle(np.mean(pilot_a[1:] * np.conj(pilot_a[:-1]))))
+            off  = dphi * _DEMOD_RATE / (2.0 * np.pi)
+            if not self._pilot_off_init:
+                self._pilot_off_smooth = off
+                self._pilot_off_init   = True
+            else:
+                self._pilot_off_smooth += 0.1 * (off - self._pilot_off_smooth)
+            self.last_pilot_offset_hz = self._pilot_off_smooth
         self.last_pilot_rms     = pilot_rms
         self.last_iq_rms        = iq_rms
         self.last_composite_rms = float(np.sqrt(np.mean(composite ** 2)))

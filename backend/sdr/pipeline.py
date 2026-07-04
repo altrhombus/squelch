@@ -427,6 +427,9 @@ class RadioPipeline:
             d["noise_rms"]     = float(getattr(self._demod, "last_noise_rms",     0.0))
             d["blend"]         = float(getattr(self._demod, "last_blend",         0.0))
             d["audio_rms"]     = float(getattr(self._demod, "last_audio_rms",     0.0))
+            # ppm calibration aid: crystal ppm ≈ −pilot_offset_hz / 0.019
+            d["pilot_offset_hz"] = round(
+                float(getattr(self._demod, "last_pilot_offset_hz", 0.0)), 3)
         if self._hd_detect is not None:
             d["hd_ratio"] = round(self._hd_detect.ratio, 3)   # calibration aid
         if self._current_gain is not None:
