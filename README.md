@@ -2,17 +2,21 @@
 
 [![CI](https://github.com/altrhombus/squelch/actions/workflows/ci.yml/badge.svg)](https://github.com/altrhombus/squelch/actions/workflows/ci.yml)
 
-A self-hosted SDR radio streamer for the Raspberry Pi. Tune FM (stereo), AM, HD Radio, and scanner frequencies — stream to any device on your home network via a mobile-friendly web interface.
+A self-hosted SDR radio streamer for the Raspberry Pi. Tune FM (stereo), AM, HD Radio, weather radio, and scanner frequencies — stream to any device on your home network via a modern, responsive web interface.
 
 - **AAC-LC audio stream** — chunked HTTP delivery, natively decoded by iOS/macOS/Chrome with no plugins or apps required
-- **FM stereo** — custom DSP pipeline (numpy/scipy): pilot demodulation, Wiener filter noise reduction, stereo blend, de-emphasis, K-weighted AGC
-- **RDS metadata** — station name, artist/title, program type (FM); reassembles song info from stations that page it through the PS field
+- **FM stereo** — fully stateful custom DSP pipeline (numpy/scipy): phase-continuous carrier recovery, Ephraim-Malah Wiener noise reduction, adaptive stereo blend + width restoration, de-emphasis, K-weighted (BS.1770) AGC, soft-knee limiting — all block-boundary-seamless
+- **A serious RDS decoder** — coherent pilot-locked carrier, adaptive symbol-timing recovery (tolerates >200 ppm dongle clocks), position-tracked block sync that survives bit errors, burst error correction with a double-confirmation guard against mis-corrections, RT+ structured tags, tiered RadioText emission, and successor-graph reassembly of song info from stations that page it through the PS field
 - **HD detection** — spots IBOC digital sidebands while you listen to analog FM and offers a one-tap switch to HD
 - **HD Radio** — full NRSC-5 decode including cover art and rich metadata
+- **Self-calibrating tuning** — measures your dongle's crystal error live (from the FM stereo pilot or a NOAA carrier) and auto-recenters narrowband channels (AFC), so WX and scanner work even on uncalibrated dongles
+- **Noise-reduced NFM** — weather radio and scanner voice get the same Wiener noise reduction as FM, plus a squelch you control from the UI
+- **Runs cool** — the SDR powers down entirely (tuner off, USB idle) whenever nobody is listening, and wakes in about a second on the next connection
+- **Seek scan** — hold a tuning chevron and Squelch steps the band and stops on the next receivable station, like a car radio
 - **AirPlay** — tap the AirPlay button in Safari to route audio to any AirPlay target
-- **Recording** — one-tap recording, auto-named from station metadata
+- **Recording** — one-tap recording, auto-named from station metadata; scheduled recordings via the API
 - **Icecast output** (optional) — push the stream to an Icecast mount with live now-playing metadata for VLC/Sonos-style clients
-- **Web UI** — no SDR jargon exposed; just stations, a dial, and a play button
+- **Web UI in the Golden Gate design language** — one continuous radio surface with a scrub-able glass frequency ruler (your presets marked on the tape), a flush library sidebar on desktop, floating tab bar on iPhone/iPad, art-tinted dynamic accents, and an adjustable glass intensity setting; no SDR jargon anywhere
 
 ---
 
@@ -184,25 +188,45 @@ The stream URL (`/stream`) works directly with `AVPlayer` — the AAC-LC ADTS fo
 | FM broadcast (87.5–108 MHz) | Full stereo, RDS metadata, noise-adaptive DSP |
 | AM broadcast (530–1700 kHz) | Requires RTL-SDR v3/v4 direct sampling; long-wire antenna recommended |
 | HD Radio (87.5–108 MHz) | Requires `nrsc5`; ~400% CPU on Pi 4; falls back to analog FM if unavailable |
-| Scanner / NFM (25–1300 MHz) | Narrowband FM; aviation band (118–137 MHz) auto-switches to AM demodulation |
+| Weather radio (162.4–162.55 MHz) | All seven NOAA channels as one-tap chips; NFM with noise reduction, AFC, squelch |
+| Scanner / NFM (25–1300 MHz) | Keypad entry, squelch, AFC; aviation band (118–137 MHz) auto-switches to AM demodulation |
 
 ---
 
 ## FM signal processing
 
-All FM DSP runs in Python (numpy/scipy) — no GNU Radio required. The pipeline from IQ samples to encoded audio:
+All FM DSP runs in Python (numpy/scipy) — no GNU Radio required. Every stage is **stateful across processing blocks** (carried filter states, resampler history, mixer phase, decimation phase), so consecutive ~218 ms blocks behave exactly like one continuous run — no block-rate edge artifacts anywhere in the chain. The pipeline from IQ samples to encoded audio:
 
-1. **Decimation** — 1.2 MHz IQ → 240 kHz via polyphase resampling
-2. **FM discriminator** — phase-difference demodulator → composite baseband
+1. **Decimation** — 1.2 MHz IQ → 240 kHz via a stateful overlap-save polyphase resampler (bit-identical to resampling the whole signal at once)
+2. **FM discriminator** — phase-difference demodulator with sample carry across blocks → composite baseband
 3. **Click blanking** — two-stage: hard clip at ±1.5, then burst interpolation for multi-sample phase slips
-4. **Stereo decoding** — pilot BPF (17–21 kHz), Hilbert carrier doubling to 38 kHz, coherent DSB-SC L-R demodulation
+4. **Stereo decoding** — analytic 19 kHz pilot via heterodyne + stateful lowpass (phase-continuous, no FFTs in the hot path), squared to a 38 kHz carrier for coherent DSB-SC L-R demodulation
 5. **Stereo blend** — continuous fade toward mono as pilot SNR or discriminator SNR drops; prevents the stereo hiss that would otherwise appear on weak stations
 6. **Software gain control** — adaptively steps RTL-SDR hardware gain every ~5 s to stay in the optimal SNR operating range without ADC saturation
-7. **Wiener filter noise reduction** — Ephraim-Malah (1984) decision-directed Wiener gain across the full 0–15 kHz band, operating on the pre-emphasized signal where HF SNR is highest (+10–17 dB vs. post-de-emphasis). MinStat circular-buffer noise floor estimation keeps the filter calibrated even on stations with no silence gaps.
+7. **Wiener filter noise reduction** — Ephraim-Malah (1984) decision-directed Wiener gain across the full 0–15 kHz band, operating on the pre-emphasized signal where HF SNR is highest (+10–17 dB vs. post-de-emphasis), floored by a physics-based noise estimate from the 65–90 kHz discriminator band
 8. **De-emphasis** — 75 µs (US) or 50 µs (EU) first-order IIR
 9. **Stereo width restoration** — selectively recovers midrange (300–3500 Hz) L-R content on weak stations where the stereo blend has suppressed it
 10. **K-weighted AGC** — loudness normalization per ITU-R BS.1770-4; treats spectrally bright and bass-heavy stations as equally loud
 11. **Soft-knee limiter** — tanh rolloff above 0.85 normalised amplitude; avoids the HF harmonics a hard clip would introduce
+
+## RDS decoding
+
+The RDS decoder (`backend/sdr/rds.py`) is built for weak, real-world signals:
+
+- **Coherent carrier** — the 57 kHz subcarrier is regenerated by cubing the analytic pilot, so it tracks the station exactly
+- **Adaptive symbol timing** — a per-phase energy tracker acquires the sampling point from an arbitrary start and slews with clock drift; biphase-lobe-aware so it never hunts between the two half-symbol peaks. Tolerates >200 ppm uncorrected dongle crystals
+- **Position-tracked block sync** — a CRC-failed block blanks its slot instead of costing re-acquisition; sync survives isolated bit errors and only re-acquires on a genuine fade
+- **Burst error correction** — the (26,16) code's syndrome table corrects ≤2-bit bursts, roughly doubling group throughput at threshold SNR. A double-reception confirmation gate keeps rare mis-corrections (a >2-bit error "corrected" into a different valid word) off the display
+- **Rich payloads** — PS, RadioText with tiered partial→complete emission, RT+ structured artist/title tags (IEC 62106 Annex A), PTY, PI, extended character set (EN 50067 Annex E)
+- **Dynamic-PS reassembly** — stations that page song info through the 8-character PS field are reconstructed via a successor graph that tolerates heavy page loss, with rotation scoring to find the true message start
+- Everything corruption-prone is **debounced or double-confirmed** (PI, PTY, A/B flag flips, extended characters, corrected groups), and provisional text is display-only — it never reaches history or the cover-art lookup until confident
+
+## NFM, weather radio, and self-calibration
+
+WX and scanner channels decode as narrowband FM with a proper channel filter, the same Wiener noise reduction as FM (driven by an out-of-band discriminator noise measurement), and a silence-gated AGC. Two calibration aids make cheap dongles behave:
+
+- **`diag.pilot_offset_hz`** (FM) and **`diag.carrier_offset_hz`** (WX) measure your crystal's ppm error live — the FM pilot is transmitter-exact to ±2 Hz and NOAA carriers are exact, so you can calibrate `ppm_correction` from the diagnostics popover without ever running `rtl_test`
+- **AFC** — on WX/scanner, the pipeline measures the carrier offset (power centroid, immune to modulation) and recenters the tuner automatically when it's stable and >1 kHz off, so narrowband reception works even with `ppm_correction: 0`
 
 ---
 
@@ -262,6 +286,8 @@ These are in `backend/sdr/pipeline.py`.
 
 ## Architecture
 
+The SDR device is fully closed (tuner powered off, no USB transfers) whenever no listener, recorder, or keep-alive Icecast mount needs audio, and reopens on the next connection — the dongle is usually the hottest part of the build, so this matters more for enclosure temperature than any software optimisation.
+
 ```
 RTL-SDR ──USB──▶ pyrtlsdr async stream (1.2 MHz IQ, ~218 ms blocks)
                      │
@@ -287,12 +313,18 @@ HD Radio: nrsc5 subprocess ──PCM pipe──▶ resample 44.1→48 kHz ──
 
 ## Development
 
-You don't need SDR hardware to hack on Squelch — the test suite drives the full FM demodulator with synthetic IQ signals:
+You don't need SDR hardware to hack on Squelch — the test suite drives the full FM demodulator, the RDS decoder (down to a synthesized composite waveform with a biphase-modulated 57 kHz subcarrier, clock drift, and noise), and the AM/NFM paths entirely with synthetic IQ:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest -q
+```
+
+When something *sounds* wrong on air, record it in the UI and run the recording through the forensics tool — it measures the artifacts we've learned to chase (AGC onset blasts, Wiener sibilance warble, clipping, spectral balance, stereo width):
+
+```bash
+python tools/waveform_review.py ~/recordings/that-weird-noise.aac
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup details, code style, and how DSP changes are validated.
@@ -339,7 +371,7 @@ sudo modprobe -r dvb_usb_rtl28xxu
 echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/rtl-blocklist.conf
 ```
 
-**No audio after tuning**: Check `journalctl -u squelch -f`. The most common cause is a missing or incorrect `ppm_correction` value in `settings.yaml` shifting the station off-frequency. Run `rtl_test -p` for several minutes to get your dongle's PPM offset.
+**No audio after tuning**: Check `journalctl -u squelch -f`. Wideband FM is very tolerant of crystal error, but weather/scanner channels are not — if WX is static, your dongle likely needs `ppm_correction`. You don't need `rtl_test`: tune WX2 (162.400) and read `carrier_offset_hz` from the signal-details popover — your ppm is `−offset / 162.4`. (AFC will usually rescue reception even uncorrected, but a corrected dongle locks in faster.) Cross-check on a strong FM station via `pilot_offset_hz` (ppm ≈ −offset / 0.019).
 
 **Poor AM reception**: AM direct sampling requires an RTL-SDR v3 or v4. A 10–20 m wire connected to the antenna input makes a large difference; indoors reception is often marginal without one.
 
