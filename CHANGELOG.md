@@ -71,6 +71,31 @@ All notable changes to Squelch are documented here. The format follows
 
 ### Added
 
+- **Complete UI redesign in the macOS 27 "Golden Gate" design language.**
+  One continuous radio surface replaces the three-panel dashboard: a
+  scrub-able glass frequency ruler (momentum + channel snapping, preset
+  stations marked on the tape, tap-to-jump) under a large tabular-numeral
+  readout, with the now-playing hero and transport on the same screen.
+  Library (presets/history/recordings) becomes a flush edge sidebar on
+  desktop and a second tab on phone. Diagnostics is a popover on the
+  signal indicator; a Clear/Regular/Tinted glass-intensity setting
+  (persisted) mirrors Golden Gate's system slider and doubles as the
+  reduced-transparency story alongside `prefers-contrast` and
+  `prefers-reduced-motion` support, concentric corner radii, and
+  adaptive-contrast floating chrome.
+- **AM and Scanner bands in the UI** (they existed backend-only): AM with
+  kHz ruler and 10 kHz steps; Scanner with a frequency keypad; both WX
+  and Scanner surface a squelch slider (the `/squelch` endpoint
+  previously had no UI). The seeded AM preset no longer crashes the tuner.
+- **Hold-to-seek**: press-and-hold a step chevron scans the band and
+  stops on the next receivable station (client-driven signal polling).
+- Signal bars now reflect FM reception quality (discriminator noise vs
+  pilot — what you hear) instead of the AGC-regulated IQ level.
+- UI fixes folded in: retuning no longer restarts the audio element
+  (seamless dial steps), arrow-key tuning is debounced, the volume
+  slider is hidden on iOS where it is inert, stations without RDS fall
+  back from "Waiting for station info…" to "On air", and recording
+  state re-syncs when the tab regains focus.
 - AFC for narrowband bands (WX/scanner): the pipeline recentres the tuner
   on the measured carrier when a stable offset > 1 kHz is detected (up to
   two hops per session, noise- and squelch-proof), so an uncalibrated

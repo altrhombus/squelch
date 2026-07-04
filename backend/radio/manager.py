@@ -264,9 +264,12 @@ class RadioManager:
         """
         Returns (signal_bars 0-5, stereo_active).
 
-        Bars reflect IQ RMS — the actual RF/antenna signal level, analogous
-        to RSSI on a phone.  The gain controller keeps iq_rms in [0.07, 0.38]
-        for a receivable station, so thresholds are calibrated around that range.
+        FM bars reflect reception QUALITY — the discriminator noise floor
+        against the pilot (what the listener actually hears) — not raw IQ
+        level, which the software gain controller actively regulates into
+        a fixed window (a hissy fringe station at max gain used to show
+        4 bars).  Stations without a pilot fall back to the IQ-level
+        estimate, as do AM/scanner/WX.
 
         Stereo is driven separately by pilot_rms (19 kHz stereo pilot tone).
         HD: 5 if locked, 2 if decoding.
@@ -279,11 +282,23 @@ class RadioManager:
 
         if self._pipeline:
             iq = self._pipeline.signal_strength   # IQ RMS — RF level at the antenna
-            if   iq > 0.28: bars = 5
-            elif iq > 0.15: bars = 4
-            elif iq > 0.08: bars = 3
-            elif iq > 0.04: bars = 2
-            else:           bars = 1
+            diag = self._pipeline.get_diag()
+            pilot = diag.get("pilot_rms", 0.0)
+            noise = diag.get("noise_rms", 0.0)
+
+            if self._current_band == "fm" and pilot > 0.02:
+                ratio = noise / (pilot + 1e-9)   # ≈0 clean … ≥1.5 unlistenable
+                if   ratio < 0.30: bars = 5
+                elif ratio < 0.60: bars = 4
+                elif ratio < 1.00: bars = 3
+                elif ratio < 1.50: bars = 2
+                else:              bars = 1
+            else:
+                if   iq > 0.28: bars = 5
+                elif iq > 0.15: bars = 4
+                elif iq > 0.08: bars = 3
+                elif iq > 0.04: bars = 2
+                else:           bars = 1
 
             # Stereo badge uses pilot_rms — only meaningful for FM
             stereo = (self._current_band == "fm"
