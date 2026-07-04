@@ -53,6 +53,9 @@ class RadioManager:
         self._signal_task: Optional[asyncio.Task] = None
         self._current_freq: Optional[float] = None
         self._current_band: Optional[str]   = None
+        # DSP params of the running pipeline — a new tune with identical
+        # params on the same FM band takes the fast retune path.
+        self._last_params: Optional[tuple] = None
         self._tune_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -76,6 +79,24 @@ class RadioManager:
         hd_channel_1 = int(kwargs.get("hd_channel", 1))
         hd_program   = max(0, hd_channel_1 - 1)
 
+        # Fast path: FM → FM frequency change with identical DSP params —
+        # swap decoders and hop the tuner inside the running pipeline.  The
+        # SDR session, encoder, and client connections stay up, so dial
+        # steps don't tear down and rebuild the whole stack (which also
+        # leaked executor threads per tune).
+        if (band == "fm" and self._current_band == "fm"
+                and self._pipeline is not None
+                and (gain, deemph, stereo_mode) == self._last_params):
+            self._streams.drain_all()
+            self._current_freq = freq_hz
+            await self._pipeline.retune(freq_hz)   # does update_tune itself
+            self._meta.update_state("buffering")
+            await self._meta.broadcast()
+            if not self._signal_task or self._signal_task.done():
+                self._signal_task = asyncio.create_task(self._signal_loop())
+            logger.info("Fast retune to %.3f MHz [fm]", freq_hz / 1e6)
+            return
+
         self._meta.update_tune(freq_hz, band)
         await self._meta.broadcast()
 
@@ -84,6 +105,7 @@ class RadioManager:
 
         self._current_freq = freq_hz
         self._current_band = band
+        self._last_params  = (gain, deemph, stereo_mode)
 
         if band == "hd":
             await self._start_hd(freq_hz, program=hd_program)
@@ -97,15 +119,6 @@ class RadioManager:
             self._signal_task = asyncio.create_task(self._signal_loop())
 
         logger.info("Tuned to %.3f MHz [%s]", freq_hz / 1e6, band)
-
-    async def retune_same_band(self, freq_hz: float):
-        """Change frequency without restarting the SDR device (FM only)."""
-        if self._current_band == "fm" and self._pipeline:
-            self._meta.update_tune(freq_hz, "fm")
-            await self._pipeline.retune(freq_hz)
-            self._current_freq = freq_hz
-        else:
-            await self.tune(freq_hz, self._current_band)
 
     def set_squelch(self, slider: int):
         """Map UI slider (0-100) to an IQ RMS threshold. 0 = disabled."""
@@ -205,8 +218,11 @@ class RadioManager:
 
     async def _stop_all(self):
         if self._pipeline:
-            await self._pipeline.stop()
+            # close() (not stop()) — releases the pipeline's executor
+            # threads; a new pipeline is created per full tune.
+            await self._pipeline.close()
             self._pipeline = None
+            self._last_params = None
         if self._nrsc5:
             await self._nrsc5.stop()
             self._nrsc5 = None

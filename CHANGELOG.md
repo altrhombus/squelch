@@ -6,8 +6,58 @@ All notable changes to Squelch are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **WX band now uses the correct demodulator.** NOAA weather radio is
+  narrowband FM (5 kHz deviation); it was routed through the broadcast
+  WFM stereo demod, producing ~15× under-deviated audio with 10 kHz of
+  needless noise bandwidth. WX now decodes via the NFM path, mono.
+- **Block-edge artifacts eliminated across the DSP.** All resampling and
+  carrier-recovery stages are now stateful (`backend/sdr/dsp.py`:
+  `StatefulResampler`, `PilotRecovery`), the FM discriminator carries its
+  last sample across blocks, and the ×5 audio decimation keeps a
+  continuous phase. Previously each ~218 ms block restarted the
+  resampler FIR and FFT-hilbert, injecting a ~4.6 Hz edge transient —
+  marginal in audio, but corrupting RDS bits at every block boundary.
+- **AM adjacent-channel whistles removed.** The AM path had no channel
+  filter, so the ±24 kHz decimated passband held two neighbouring
+  stations per side whose carriers beat as 10/20 kHz heterodynes; a
+  ±5.5 kHz channel filter plus a 5 kHz audio lowpass now isolate the
+  tuned station. NFM similarly gains a ±8 kHz (Carson bandwidth)
+  channel filter.
+- **Executor-thread leak on every tune.** Each tune created a new
+  pipeline whose three thread pools were never shut down (four leaked
+  threads per tune); `RadioPipeline.close()` now releases them.
+- Retuning no longer silently discards all subsequent RDS metadata (the
+  pipeline's tune-generation stamp was not refreshed on retune).
+- Mono-mode listening on a strong signal no longer gets the conservative
+  weak-signal Wiener noise floor (quality now derives from the measured
+  SNR gate rather than the stereo blend factor, which mono mode pins to 0).
+
 ### Changed
 
+- **RDS weak-signal sensitivity substantially improved**: burst error
+  correction (≤2-bit bursts via the (26,16) code's syndrome table, gated
+  to expected block offsets while synced), position-tracked block sync
+  that holds bit alignment through CRC failures instead of re-acquiring
+  on any single bit error, and adaptive symbol-timing recovery
+  (per-phase energy tracking, biphase-lobe-aware) that handles arbitrary
+  start phase and SDR clock ppm drift. End-to-end synthetic tests decode
+  97% of groups at 40 ppm clock error, and 97% under noise + drift
+  conditions that previously decoded nothing.
+- **The SDR is now fully closed while idle** — tuner powered off, USB
+  DMA stopped — instead of discarding IQ with only the DSP suspended.
+  The dongle is typically the hottest component in the enclosure, so
+  this is the largest average-temperature win available. The device
+  reopens automatically on the next listener (Icecast `keep_alive: true`
+  still holds it open).
+- **Same-band FM retunes are now seamless**: the tuner hops and fresh
+  demod/RDS/HD-detect state is created inside the running pipeline; the
+  SDR session, encoder, and client connections stay up (previously every
+  dial step tore down and rebuilt the entire stack).
+- FM pilot/carrier recovery switched from per-block FFT hilbert to
+  heterodyne + stateful lowpass (`PilotRecovery`) — phase-continuous
+  across blocks and cheaper: no large FFTs remain in the demod hot path.
 - Internal restructuring: API endpoints split into per-domain routers
   (`backend/routes/`), app singletons moved into the lifespan
   (`backend/context.py`), one shared SQLite connection (WAL mode, indexed

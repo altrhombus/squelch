@@ -5,24 +5,30 @@ Extracts PS, RadioText, PTY, and PI from the FM composite signal.
 
 Pipeline:
   FM composite (float32, 240 kHz)
+  → analytic pilot (heterodyne + stateful LPF) → ×3 phase → 57 kHz carrier
   → BPF 54-60 kHz    [isolate 57 kHz RDS subcarrier]
-  → × 57 kHz carrier [mix to baseband; carrier = 3× pilot from Hilbert]
-  → LPF 2.4 kHz      [isolate baseband BPSK]
-  → resample → 19 kHz (exactly 16 samples per 1187.5 bps bit)
-  → differential BPSK decisions
-  → Manchester decode
-  → syndrome-based block sync + CRC
+  → × carrier        [mix to baseband]
+  → LPF 2.4 kHz      [isolate baseband biphase symbols]
+  → stateful resample → 19 kHz (16 samples per 1187.5 bps bit)
+  → per-bit sampling at an adaptively tracked phase → differential decode
+  → position-tracked block sync + CRC with short-burst error correction
   → group decode → PS / RadioText / PTY / PI
 
-Call feed(composite, pilot_analytic) each DSP block. The callback is
-invoked with a dict when any field changes.
+Every stage carries state across feed() calls (filter zi, mixer phase,
+resampler history, timing phase), so block boundaries are seamless — a
+stateless resampler here used to corrupt bits at every ~218 ms boundary.
+
+Call feed(composite) each DSP block. The callback is invoked with a dict
+when any field changes.
 """
 
 import logging
 import time
 import numpy as np
-from scipy.signal import butter, sosfilt, resample_poly, hilbert
+from scipy.signal import butter, sosfilt
 from typing import Callable, Optional
+
+from .dsp import PilotRecovery, StatefulResampler
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +86,64 @@ def _syndrome(word26: int) -> int:
     return reg
 
 
+# ---------------------------------------------------------------------------
+# Burst error correction — the (26,16) RDS code corrects bursts up to 5 bits,
+# but every extra bit of correction capability raises the odds of "correcting"
+# a garbage block into validity: a random syndrome hits the table with
+# probability len(table)/1024.  Bursts ≤ 2 (51 patterns, ~5% false-accept on
+# pure noise, absorbed by the PI/PTY/RT debounce layers upstream) fix the
+# dominant real errors — isolated flips and short ISI bursts — and roughly
+# double group throughput at threshold SNR versus detect-only.
+# ---------------------------------------------------------------------------
+
+_MAX_CORR_BURST = 2
+_MAX_BAD_BLOCKS = 10   # consecutive CRC failures tolerated before re-syncing
+
+
+def _build_burst_table() -> dict:
+    """Map syndrome(e) → e for every burst error of length ≤ _MAX_CORR_BURST.
+
+    The syndrome is linear over GF(2), so for a received word r = c ⊕ e:
+    syndrome(r) = offset ⊕ syndrome(e).  Distinctness of the syndromes is
+    guaranteed by the code's burst-correction capability (≤ 5)."""
+    table: dict = {}
+    for length in range(1, _MAX_CORR_BURST + 1):
+        if length == 1:
+            patterns = [1]
+        else:
+            # First and last burst bits set; interior bits free.
+            patterns = [(1 << (length - 1)) | 1 | (mid << 1)
+                        for mid in range(1 << (length - 2))]
+        for pat in patterns:
+            for pos in range(27 - length):
+                e = pat << pos
+                syn = _syndrome(e)
+                assert syn not in table, "burst syndromes must be unique"
+                table[syn] = e
+    return table
+
+
+_BURST_ERRORS = _build_burst_table()
+
+# Expected block offsets by position within a group (A B C|C' D).
+_EXPECTED_BY_POS = {0: ("A",), 1: ("B",), 2: ("C", "C'"), 3: ("D",)}
+
+
+def _match_or_correct(word26: int, expected: tuple) -> tuple:
+    """Return (block_type, data16, corrected) for a clean or burst-corrected
+    block, or (None, None, False).  Exact matches win over corrections when
+    the position admits two offsets (C vs C')."""
+    s = _syndrome(word26)
+    for name in expected:
+        if s == _OFFSETS[name]:
+            return name, (word26 >> 10) & 0xFFFF, False
+    for name in expected:
+        e = _BURST_ERRORS.get(s ^ _OFFSETS[name])
+        if e is not None:
+            return name, ((word26 ^ e) >> 10) & 0xFFFF, True
+    return None, None, False
+
+
 def _extract_rtp_tag(rt: str, start: int, length: int) -> Optional[str]:
     """
     Extract one RT+ tagged substring from the current RadioText string.
@@ -93,14 +157,6 @@ def _extract_rtp_tag(rt: str, start: int, length: int) -> Optional[str]:
     if end > len(rt):
         return None
     return rt[start:end].strip("\x00\x20\x0d\x0a") or None
-
-
-def _syndrome_matches(word26: int) -> Optional[str]:
-    s = _syndrome(word26)
-    for name, offset in _OFFSETS.items():
-        if s == offset:
-            return name
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +224,11 @@ class RdsDecoder:
         self._cb = callback
         self._clock = clock
 
-        # 19 kHz pilot extraction — must bandpass the pilot first, then cube
-        # the analytic signal to get the 57 kHz carrier.  Passing hilbert of
-        # the full composite (as was done before) gives the wrong carrier.
-        self._pilot_sos = butter(4, [17_000, 21_000], 'bandpass', fs=_DEMOD_RATE, output='sos')
-        self._pilot_zi  = _zero_zi(self._pilot_sos)
+        # Analytic 19 kHz pilot for carrier synthesis (heterodyne + stateful
+        # LPF — see PilotRecovery).  Must derive from the pilot, not from a
+        # hilbert of the full composite, which gives the wrong carrier when
+        # cubed.  Phase-continuous across feed() calls.
+        self._pilot_rec = PilotRecovery(_DEMOD_RATE)
 
         # Subcarrier extraction (BPF 54-60 kHz at 240 kHz)
         self._rds_sos = butter(6, [54_000, 60_000], 'bandpass', fs=_DEMOD_RATE, output='sos')
@@ -182,16 +238,33 @@ class RdsDecoder:
         self._lp_sos = butter(4, 2_400, 'lowpass', fs=_DEMOD_RATE, output='sos')
         self._lp_zi  = _zero_zi(self._lp_sos)
 
+        # Stateful 240 kHz → 19 kHz resampler.  A per-block resample_poly
+        # restarted its FIR at every DSP block boundary, corrupting 1-2 bits
+        # ~4.6 times a second regardless of signal quality.
+        self._resamp = StatefulResampler(19, 240)
+
         # Bit-stream buffer (at 19 kHz)
         self._sample_buf: list[float] = []
         self._bit_buf: list[int] = []     # 26-bit sliding window for syndrome check
         self._prev_bit = 0               # for differential decoding
 
-        # Sync state
+        # Symbol timing tracker (see _extract_bits).  Mean |amplitude| per
+        # intra-bit phase bin; the sampling phase is steered toward the
+        # energy maximum — snap while unsynced, slow slew while synced.
+        self._samp_phase     = 8.0              # sampling offset within a bit
+        self._buf_abs        = 0                # absolute index of _sample_buf[0]
+        self._abs_out        = 0                # absolute 19 kHz samples produced
+        self._phase_energy   = np.zeros(16)     # EMA of |amp| per phase bin
+        self._energy_updates = 0
+
+        # Sync state.  While synced, the bit position within the 104-bit
+        # group cycle is tracked explicitly so a CRC-failed block blanks its
+        # slot instead of costing a full re-acquisition.
         self._synced  = False
-        self._sync_offset = 0            # sample offset within SPS
-        self._blocks: list[int] = []     # assembled 16-bit data words
-        self._block_types: list[str] = []
+        self._block_pos = 0              # expected block within group (0-3)
+        self._bad_blocks = 0             # consecutive CRC failures while synced
+        self._blocks: list = []          # assembled 16-bit data words (None = lost)
+        self._block_types: list = []
 
         # RDS fields
         self._pi: Optional[int]     = None
@@ -230,14 +303,11 @@ class RdsDecoder:
         """
         c = composite.astype(np.float64)
 
-        # 1. Extract 19 kHz pilot with BPF, then build the 57 kHz carrier.
-        #    The carrier must be derived from hilbert(pilot_filtered), NOT
-        #    from hilbert(composite) — the latter gives a noisy broadband
-        #    analytic signal that produces the wrong carrier when cubed.
-        pilot, self._pilot_zi = sosfilt(self._pilot_sos, c, zi=self._pilot_zi)
-        pilot_a   = hilbert(pilot).astype(np.complex64)
-        c57       = pilot_a ** 3                           # 57 kHz analytic
-        c57_norm  = (c57 / (np.abs(c57) + 1e-10)).real.astype(np.float64)
+        # 1. Analytic pilot A·e^{jθ}; cubing the unit phasor gives the
+        #    phase-locked 57 kHz carrier cos(3θ).
+        pilot_a  = self._pilot_rec.process(c)
+        u        = pilot_a / (np.abs(pilot_a) + 1e-10)
+        c57_norm = (u ** 3).real
 
         # 2. BPF around 57 kHz to isolate the RDS subcarrier
         rds_band, self._rds_zi = sosfilt(self._rds_sos, c, zi=self._rds_zi)
@@ -246,10 +316,27 @@ class RdsDecoder:
         baseband = rds_band * c57_norm
         baseband, self._lp_zi = sosfilt(self._lp_sos, baseband, zi=self._lp_zi)
 
-        # 4. Resample to 19 kHz (rational: 19/240)
-        resampled = resample_poly(baseband, 19, 240).astype(np.float32)
+        # 4. Resample to 19 kHz (rational: 19/240) — stateful, so block
+        #    boundaries carry no filter edge transients into the bit stream.
+        resampled = self._resamp.process(baseband).astype(np.float32)
 
-        # 5. Accumulate samples and extract bits
+        # 5. Symbol-timing energy: mean |amplitude| in each of the 16
+        #    intra-bit phase bins, tracked on an absolute sample grid so the
+        #    estimate is consistent across blocks of arbitrary length.
+        m = len(resampled) // 16
+        if m >= 4:
+            e = np.abs(resampled[:m * 16]).reshape(m, 16).mean(axis=0)
+            s = self._abs_out % 16
+            e_abs = np.empty(16)
+            e_abs[(s + np.arange(16)) % 16] = e
+            if self._energy_updates == 0:
+                self._phase_energy = e_abs
+            else:
+                self._phase_energy += 0.25 * (e_abs - self._phase_energy)
+            self._energy_updates += 1
+        self._abs_out += len(resampled)
+
+        # 6. Accumulate samples and extract bits
         self._sample_buf.extend(resampled.tolist())
         self._extract_bits()
 
@@ -259,85 +346,149 @@ class RdsDecoder:
 
     def _extract_bits(self):
         """
-        Sample the baseband signal at the RDS bit rate and differential-decode.
+        Sample the baseband signal once per bit and differential-decode.
 
-        RDS uses differential BPSK — each bit is encoded as a phase change
-        (1) or no change (0).  After coherent demodulation to baseband the
-        signal is ±1 per bit period; differential decoding (XOR consecutive
-        samples) recovers the data bits directly.
+        RDS transmits the differentially-encoded bit stream as biphase
+        (Manchester-like) symbols at 1187.5 baud (EN 50067 §5.1): each bit
+        occupies two half-bit lobes of opposite sign.  Sampling once per
+        bit period at a CONSISTENT phase inside either lobe yields the
+        encoded stream (or its complement — a constant inversion cancels
+        in the differential XOR), so no explicit biphase merge is needed.
+        What does matter is the sampling phase:
 
-        There is NO additional Manchester/biphase layer in RDS.  The earlier
-        _manchester_and_group step was wrong and was effectively halving the
-        bit rate reaching the syndrome checker, which is why decoding was
-        extremely rare (one group per several minutes instead of ~11/sec).
+        - landing near the mid-bit lobe transition makes every decision
+          noise-dominated (and a fixed arbitrary phase could land there
+          permanently, depending on when the decoder started);
+        - the SDR clock's ppm error makes the true bit period ≠ exactly
+          16 output samples, so any fixed phase slowly drifts through the
+          symbol and periodically slips a bit.
+
+        The tracker steers the sampling phase toward the maximum of the
+        per-phase |amplitude| profile measured in feed(): a snap while
+        unsynced (fast acquisition), a bounded slew while synced (ppm
+        tracking without spurious bit slips).
         """
         buf = self._sample_buf
-        sps = _SPS   # exactly 16.0 = 19000 / 1187.5
+        sps = int(_SPS)   # exactly 16 = 19000 / 1187.5
 
-        pos = 0.0
+        if self._energy_updates >= 3:
+            # A biphase bit has TWO energy maxima — one per half-lobe,
+            # 8 samples apart and near-equal — so the profile is folded
+            # mod 8 and the phase steered to the NEAREST lobe centre.
+            # Tracking the raw 16-bin argmax made the tracker hunt between
+            # the two lobes under clock drift, mixing sample polarity and
+            # corrupting most groups.  Staying on one lobe keeps polarity
+            # consistent (a constant inversion cancels in the differential
+            # XOR); lobe changes only happen via explicit phase wraps —
+            # a single recoverable bit slip.
+            e8 = self._phase_energy[:8] + self._phase_energy[8:]
+            best = int(np.argmax(e8))
+            cur = (self._buf_abs + int(self._samp_phase)) % 8
+            err = (best - cur + 4) % 8 - 4           # signed, in [-4, 4)
+            # Snap during acquisition (unsynced, or synced-on-noise with
+            # accumulating CRC failures); bounded slew while genuinely
+            # locked so ppm drift is tracked without spurious bit slips.
+            if abs(err) > 1.5 and (not self._synced or self._bad_blocks >= 3):
+                step = float(err)
+            else:
+                step = float(np.clip(0.2 * err, -0.5, 0.5))
+            self._samp_phase += step
+            if self._samp_phase >= 16.0:              # deliberate bit slip;
+                self._samp_phase -= 16.0              # sync recovers
+            elif self._samp_phase < 0.0:
+                self._samp_phase += 16.0
+
+        pos = 0
         while pos + sps <= len(buf):
-            idx = int(pos + sps / 2)
-            if idx < len(buf):
-                raw = 1 if buf[idx] >= 0.0 else 0
-                diff = raw ^ self._prev_bit
-                self._prev_bit = raw
-                self._push_bit(diff)
+            idx = pos + int(self._samp_phase)
+            raw = 1 if buf[idx] >= 0.0 else 0
+            diff = raw ^ self._prev_bit
+            self._prev_bit = raw
+            self._push_bit(diff)
             pos += sps
 
-        consumed = int(pos)
-        self._sample_buf = buf[consumed:]
+        self._sample_buf = buf[pos:]
+        self._buf_abs += pos
         # Guard against unbounded growth if processing falls behind
         if len(self._sample_buf) > 800:
+            dropped = len(self._sample_buf) - 400
             self._sample_buf = self._sample_buf[-400:]
+            self._buf_abs += dropped
 
     def _push_bit(self, bit: int):
-        """Push one RDS bit into the 26-bit sliding window for sync/decode."""
+        """Push one RDS bit into the sync/decode state machine.
+
+        Unsynced: 26-bit sliding-window search for an exact block-A
+        syndrome (correction disabled while searching — a burst-corrected
+        match is far too weak an anchor and would cause false sync on
+        noise).
+
+        Synced: consume exactly 26 bits per block and hold that alignment
+        even through CRC failures.  A failed block blanks its slot in the
+        group (the group is discarded) instead of throwing away the bit
+        alignment — the old lose-sync-on-any-error behaviour cost the
+        group PLUS a ~13-bit average re-search PLUS the next partial
+        group for every single bit error.  Sync is only re-acquired after
+        _MAX_BAD_BLOCKS consecutive failures (a real fade or a genuine
+        slip, not an isolated corrupt block).
+        """
         self._bit_buf.append(bit)
+
+        if not self._synced:
+            if len(self._bit_buf) < 26:
+                return
+            if len(self._bit_buf) > 26:
+                self._bit_buf.pop(0)
+            word26 = 0
+            for b in self._bit_buf:
+                word26 = (word26 << 1) | b
+            if _syndrome(word26) == _OFFSETS["A"]:
+                self._synced = True
+                self._blocks = [(word26 >> 10) & 0xFFFF]
+                self._block_types = ["A"]
+                self._block_pos = 1
+                self._bad_blocks = 0
+                self._bit_buf.clear()
+            return
+
         if len(self._bit_buf) < 26:
             return
-        if len(self._bit_buf) > 26:
-            self._bit_buf.pop(0)
-
         word26 = 0
         for b in self._bit_buf:
             word26 = (word26 << 1) | b
+        self._bit_buf.clear()
 
-        block_type = _syndrome_matches(word26)
+        block_type, data, corrected = _match_or_correct(
+            word26, _EXPECTED_BY_POS[self._block_pos])
         if block_type is None:
-            return
-
-        # Extract 16-bit data word
-        data = (word26 >> 10) & 0xFFFF
-
-        if not self._synced:
-            if block_type == "A":
-                self._synced = True
-                self._blocks = [data]
-                self._block_types = ["A"]
-                self._bit_buf.clear()
-        else:
-            # Expected next block given the last received
-            _next = {"A": ("B",), "B": ("C", "C'"), "C": ("D",), "C'": ("D",)}
-            prev = self._block_types[-1] if self._block_types else None
-            if prev and block_type not in _next.get(prev, ()):
-                # Unexpected sequence — lose sync and start searching again
+            self._bad_blocks += 1
+            if self._bad_blocks >= _MAX_BAD_BLOCKS:
                 self._synced = False
                 self._blocks.clear()
                 self._block_types.clear()
                 return
-
+            self._blocks.append(None)
+            self._block_types.append(None)
+        else:
+            # Only a CLEAN block fully resets the failure counter.  A
+            # corrected block merely decrements it: garbage bits get
+            # "corrected" into validity ~5-10% of the time, and letting
+            # those coincidences reset the counter livelocked a false sync
+            # (synced on noise, never re-acquiring).  A genuine lock
+            # produces clean blocks often enough to keep the counter down.
+            if corrected:
+                self._bad_blocks = max(0, self._bad_blocks - 1)
+            else:
+                self._bad_blocks = 0
             self._blocks.append(data)
             self._block_types.append(block_type)
-            self._bit_buf.clear()
 
-            if len(self._blocks) == 4:
+        self._block_pos = (self._block_pos + 1) % 4
+        if self._block_pos == 0:
+            if all(b is not None for b in self._blocks):
                 self._decode_group(self._blocks, self._block_types)
-                self._blocks.clear()
-                self._block_types.clear()
-                # Stay synced after a good group — re-acquire only on failure.
-                # Re-syncing every group throws away the alignment we just found
-                # and wastes 26 bits searching each time.
-                self._synced = True
+            self._blocks.clear()
+            self._block_types.clear()
 
     def _decode_group(self, blocks: list[int], types: list[str]):
         if len(blocks) < 4:

@@ -2,8 +2,15 @@
 RadioPipeline — owns the RTL-SDR device, DSP, and feeds encoded AAC
 chunks to the StreamingManager.
 
-FM / HD: 2.4 MHz sample rate, stereo
-AM / Scanner: 1.2 MHz sample rate, mono, AM uses direct sampling
+FM: 1.2 MHz sample rate, stereo (custom demod + RDS + HD detection)
+AM / Scanner / WX: 1.2 MHz, mono; AM uses direct sampling, WX and the
+non-aviation scanner bands use narrowband FM.
+
+Idle behaviour: while no listener/recorder is connected (and Icecast
+keep_alive isn't holding the stream open), the SDR device is fully
+closed — no tuner power, no 2.4 MB/s USB DMA — and reopened on the next
+client.  The dongle is usually the hottest component in the enclosure,
+so this matters more for average temperature than any DSP optimisation.
 """
 
 import asyncio
@@ -54,8 +61,8 @@ class RadioPipeline:
         pipeline = RadioPipeline(config, metadata, streaming_manager)
         await pipeline.start(freq_hz, band)
         ...
-        await pipeline.stop()
-        await pipeline.start(new_freq, band)  # retune
+        await pipeline.retune(new_freq)   # same-band FM: no SDR restart
+        await pipeline.close()            # terminal: releases executors
     """
 
     def __init__(self, config: dict, metadata, streaming_manager):
@@ -80,14 +87,25 @@ class RadioPipeline:
         self._rds_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sdr-rds")
         self._band: Optional[str] = None
         self._freq: Optional[float] = None
+        self._gain = "auto"
+        self._deemphasis_us = 75
+        self._stereo_mode = "auto"
         self._demod = None
         self._rds:  Optional[RdsDecoder] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._squelch_iq: float = 0.0      # 0 = disabled; mute audio when iq_rms < threshold
         self._squelch_silence_n: int = 5243  # output samples per block; updated on first live block
         self._current_gain: Optional[float] = None   # dB; None when hardware auto
+        # Software gain controller state — persists across idle SDR
+        # sessions so gain doesn't restart from scratch on every listener
+        # reconnect to the same station.
+        self._avail_gains: list = []
+        self._gain_idx: int = 0
         self._hd_detect: Optional[HdSidebandDetector] = None   # FM band only
         self._hd_detect_countdown = 0
+        # True until the next encoded chunk should flip state to "live"
+        # (set on start and retune; consumed in the session loop).
+        self._announce_live = True
 
     # ------------------------------------------------------------------
     # Public API
@@ -97,6 +115,10 @@ class RadioPipeline:
         await self.stop()
         self._band = band
         self._freq = freq_hz
+        self._gain = gain
+        self._deemphasis_us = deemphasis_us
+        self._stereo_mode = stereo_mode
+        self._announce_live = True
         self._demod = self._make_demod(band, freq_hz, deemphasis_us, stereo_mode)
 
         if band == "fm":
@@ -108,7 +130,7 @@ class RadioPipeline:
         self._hd_detect_countdown = 0
 
         self._task = asyncio.create_task(
-            self._run(freq_hz, band, gain),
+            self._run(band, gain),
             name=f"sdr-{band}-{freq_hz/1e6:.3f}MHz",
         )
 
@@ -123,130 +145,72 @@ class RadioPipeline:
         self._demod = None
         self._rds   = None
 
+    async def close(self):
+        """Terminal shutdown: stop streaming and release the executor
+        threads.  A stopped pipeline can be start()ed again; a closed one
+        cannot.  RadioManager creates a fresh pipeline per full tune —
+        without this, the three executors leaked four threads per tune."""
+        await self.stop()
+        for ex in (self._executor, self._ss_executor, self._rds_executor):
+            ex.shutdown(wait=False, cancel_futures=True)
+
     def set_squelch(self, threshold: float):
         """IQ RMS below which audio is muted; 0 disables squelch."""
         self._squelch_iq = max(0.0, float(threshold))
 
     async def retune(self, freq_hz: float):
-        """Change frequency within the same band without full restart."""
-        if self._band == "fm" and self._sdr is not None:
+        """Change frequency within the same band without restarting the SDR.
+
+        FM only.  The demodulator, RDS decoder, and HD detector carry the
+        old station's state (AGC level, blend, MinStat noise history, bit
+        sync), so fresh instances are created; the SDR device, session,
+        and encoder keep running, so audio continues without a reconnect
+        gap.  If the SDR is idle-closed, only the frequency is recorded —
+        the next session opens on it.
+        """
+        if self._band != "fm" or self._task is None or self._task.done():
+            await self.start(freq_hz, self._band or "fm", self._gain,
+                             self._deemphasis_us, self._stereo_mode)
+            return
+
+        self._freq = freq_hz
+        self._meta.update_tune(freq_hz, self._band)
+        # update_tune bumped the tune generation — refresh ours, or every
+        # subsequent RDS callback would be dropped as stale.
+        self._meta_gen = self._meta.tune_generation
+        self._demod = self._make_demod("fm", freq_hz, self._deemphasis_us, self._stereo_mode)
+        self._rds = RdsDecoder(self._on_rds)
+        self._hd_detect = HdSidebandDetector()
+        self._hd_detect_countdown = 0
+        self._announce_live = True
+
+        sdr = self._sdr
+        if sdr is not None:
             try:
-                self._sdr.center_freq = freq_hz
-                self._freq = freq_hz
-                self._meta.update_tune(freq_hz, self._band)
-                if self._rds:
-                    self._rds = RdsDecoder(self._on_rds)
-                logger.info("Retuned to %.3f MHz [%s]", freq_hz / 1e6, self._band)
+                sdr.center_freq = freq_hz
             except Exception as e:
                 logger.warning("Retune failed, restarting: %s", e)
-                await self.start(freq_hz, self._band)
-        else:
-            await self.start(freq_hz, self._band)
+                await self.start(freq_hz, self._band, self._gain,
+                                 self._deemphasis_us, self._stereo_mode)
+                return
+        logger.info("Retuned to %.3f MHz [%s]", freq_hz / 1e6, self._band)
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
-    async def _run(self, freq_hz: float, band: str, gain):
-        from rtlsdr import RtlSdr
-        sdr = RtlSdr()
-        self._sdr = sdr
-
-        sr = _FM_SR if band in ("fm", "hd", "wx") else _AM_SR
-        block = _BLOCK if band in ("fm", "hd", "wx") else _AM_BLOCK
-
-        sdr.sample_rate = sr
-        sdr.center_freq = freq_hz
-
-        if band == "am":
-            sdr.set_direct_sampling("q")
-        else:
-            sdr.set_direct_sampling(0)
-
-        # For FM with gain="auto", replace the hardware AGC with software
-        # gain control.  The R820T2 hardware AGC targets ADC headroom only
-        # and typically lands at 40-49 dB, which degrades FM SNR compared
-        # to the ~30 dB noise-figure optimum.  We start near 30 dB and
-        # step only to keep the IQ RMS inside the safe operating range.
-        if band in ("fm", "wx") and gain == "auto":
-            # rtlsdr_get_tuner_gains() returns tenths-of-dB (e.g. 297 = 29.7 dB).
-            # pyrtlsdr exposes these raw values via gain_values; divide by 10 so
-            # our search and sdr.gain setter (which expects dB) both work correctly.
-            avail_gains = sorted(v / 10.0 for v in sdr.gain_values)
-            g_idx = min(range(len(avail_gains)),
-                        key=lambda i: abs(avail_gains[i] - _FM_GAIN_START))
-            sdr.gain = avail_gains[g_idx]
-            self._current_gain = avail_gains[g_idx]
-            logger.info("FM software gain control: starting at %.1f dB", avail_gains[g_idx])
-        else:
-            avail_gains = []
-            g_idx = 0
-            if gain == "auto":
-                sdr.gain = "auto"
-                self._current_gain = None
-            else:
-                sdr.gain = float(gain)
-                self._current_gain = float(gain)
-
-        logger.info("SDR started: %.3f MHz [%s] at %.0f MHz SR", freq_hz / 1e6, band, sr / 1e6)
-
+    async def _run(self, band: str, gain):
+        from ..streaming import AacEncoder
+        encoder = AacEncoder(stereo=(band in ("fm", "hd")))
         loop = asyncio.get_event_loop()
         self._loop = loop   # saved for use in the executor-thread _on_rds callback
-
-        from ..streaming import AacEncoder
-        encoder = AacEncoder(stereo=(band in ("fm", "hd", "wx")))
-
-        first_chunk = True
-        hold_blocks = 0   # blocks since last gain step
         try:
-            async for iq in sdr.stream(block):
-                # Skip DSP when no clients are active, but keep consuming IQ
-                # blocks so the rtlsdraio USB queue never backs up.
-                if not self._streams.is_active():
-                    continue
-                chunk = await loop.run_in_executor(
-                    self._executor,
-                    self._process, iq, encoder,
-                )
-                if chunk:
-                    self._streams.broadcast(chunk)
-                    if first_chunk:
-                        first_chunk = False
-                        self._meta.update_state("live")
-                        asyncio.ensure_future(self._meta.broadcast())
-
-                # Software gain control step (FM only)
-                if avail_gains and self._demod is not None:
-                    hold_blocks += 1
-                    if hold_blocks >= _GAIN_HOLD_BLOCKS:
-                        hold_blocks = 0
-                        iq_rms      = self._demod.last_iq_rms
-                        pilot_rms   = getattr(self._demod, "last_pilot_rms", 0.0)
-                        noise_rms   = getattr(self._demod, "last_noise_rms",  0.0)
-                        noise_ratio = noise_rms / (pilot_rms + 1e-6)
-
-                        if iq_rms > _IQ_RMS_HI and g_idx > 0:
-                            # ADC saturation risk
-                            g_idx -= 1
-                            sdr.gain = avail_gains[g_idx]
-                            self._current_gain = avail_gains[g_idx]
-                            logger.info("FM gain ↓ %.1f dB (iq_rms=%.3f, ADC headroom)",
-                                        avail_gains[g_idx], iq_rms)
-                        elif noise_ratio > _NOISE_RATIO_MAX and iq_rms > _IQ_RMS_LO and g_idx > 0:
-                            # More gain is worsening FM SNR (pre-amp overshoot or
-                            # chip noise figure degrading above optimum)
-                            g_idx -= 1
-                            sdr.gain = avail_gains[g_idx]
-                            self._current_gain = avail_gains[g_idx]
-                            logger.info("FM gain ↓ %.1f dB (noise_ratio=%.2f, quality)",
-                                        avail_gains[g_idx], noise_ratio)
-                        elif iq_rms < _IQ_RMS_LO and g_idx < len(avail_gains) - 1:
-                            # Signal too weak
-                            g_idx += 1
-                            sdr.gain = avail_gains[g_idx]
-                            self._current_gain = avail_gains[g_idx]
-                            logger.info("FM gain ↑ %.1f dB (iq_rms=%.3f, weak signal)",
-                                        avail_gains[g_idx], iq_rms)
+            while True:
+                # SDR stays fully closed until someone needs audio: browser
+                # listeners and the recorder register as real clients, and
+                # Icecast keep_alive mode does too, holding the event set.
+                await self._streams.wait_for_clients()
+                await self._sdr_session(band, gain, encoder, loop)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -254,6 +218,78 @@ class RadioPipeline:
             # Push an error state so clients don't show "Buffering…" forever
             self._meta.update_state("error")
             await self._meta.broadcast()
+        finally:
+            encoder.close()
+            logger.info("SDR pipeline stopped")
+
+    async def _sdr_session(self, band: str, gain, encoder, loop):
+        """One SDR power-on: open the device, stream until every client
+        leaves (after StreamingManager's grace period), then close it."""
+        from rtlsdr import RtlSdr
+        sdr = RtlSdr()
+        self._sdr = sdr
+
+        sr = _FM_SR if band in ("fm", "hd") else _AM_SR
+        block = _BLOCK if band in ("fm", "hd") else _AM_BLOCK
+
+        sdr.sample_rate = sr
+        sdr.center_freq = self._freq
+
+        if band == "am":
+            sdr.set_direct_sampling("q")
+        else:
+            sdr.set_direct_sampling(0)
+
+        # For FM/WX with gain="auto", replace the hardware AGC with software
+        # gain control.  The R820T2 hardware AGC targets ADC headroom only
+        # and typically lands at 40-49 dB, which degrades FM SNR compared
+        # to the ~30 dB noise-figure optimum.  We start near 30 dB and
+        # step only to keep the IQ RMS inside the safe operating range.
+        software_gain = band in ("fm", "wx") and gain == "auto"
+        if software_gain:
+            if not self._avail_gains:
+                # rtlsdr_get_tuner_gains() returns tenths-of-dB (297 = 29.7 dB).
+                self._avail_gains = sorted(v / 10.0 for v in sdr.gain_values)
+                self._gain_idx = min(
+                    range(len(self._avail_gains)),
+                    key=lambda i: abs(self._avail_gains[i] - _FM_GAIN_START))
+            sdr.gain = self._avail_gains[self._gain_idx]
+            self._current_gain = self._avail_gains[self._gain_idx]
+            logger.info("Software gain control: starting at %.1f dB", self._current_gain)
+        else:
+            if gain == "auto":
+                sdr.gain = "auto"
+                self._current_gain = None
+            else:
+                sdr.gain = float(gain)
+                self._current_gain = float(gain)
+
+        logger.info("SDR session started: %.3f MHz [%s] at %.1f MHz SR",
+                    self._freq / 1e6, band, sr / 1e6)
+
+        hold_blocks = 0   # blocks since last gain step
+        try:
+            async for iq in sdr.stream(block):
+                if not self._streams.is_active():
+                    logger.info("No audio clients — closing SDR (tuner off)")
+                    break
+                chunk = await loop.run_in_executor(
+                    self._executor,
+                    self._process, iq, encoder,
+                )
+                if chunk:
+                    self._streams.broadcast(chunk)
+                    if self._announce_live:
+                        self._announce_live = False
+                        self._meta.update_state("live")
+                        asyncio.ensure_future(self._meta.broadcast())
+
+                # Software gain control step (FM/WX only)
+                if software_gain and self._demod is not None:
+                    hold_blocks += 1
+                    if hold_blocks >= _GAIN_HOLD_BLOCKS:
+                        hold_blocks = 0
+                        self._gain_step(sdr)
         finally:
             try:
                 await sdr.stop()
@@ -264,21 +300,52 @@ class RadioPipeline:
             except Exception:
                 pass
             self._sdr = None
-            encoder.close()
-            logger.info("SDR stopped")
+            logger.info("SDR session closed")
+
+    def _gain_step(self, sdr):
+        """One software gain-controller decision (called every ~5 s)."""
+        avail = self._avail_gains
+        g_idx = self._gain_idx
+        iq_rms      = self._demod.last_iq_rms
+        pilot_rms   = getattr(self._demod, "last_pilot_rms", 0.0)
+        noise_rms   = getattr(self._demod, "last_noise_rms",  0.0)
+        noise_ratio = noise_rms / (pilot_rms + 1e-6)
+
+        if iq_rms > _IQ_RMS_HI and g_idx > 0:
+            # ADC saturation risk
+            g_idx -= 1
+            reason = f"iq_rms={iq_rms:.3f}, ADC headroom"
+        elif noise_ratio > _NOISE_RATIO_MAX and iq_rms > _IQ_RMS_LO and g_idx > 0:
+            # More gain is worsening FM SNR (pre-amp overshoot or
+            # chip noise figure degrading above optimum)
+            g_idx -= 1
+            reason = f"noise_ratio={noise_ratio:.2f}, quality"
+        elif iq_rms < _IQ_RMS_LO and g_idx < len(avail) - 1:
+            # Signal too weak
+            g_idx += 1
+            reason = f"iq_rms={iq_rms:.3f}, weak signal"
+        else:
+            return
+
+        direction = "↑" if g_idx > self._gain_idx else "↓"
+        self._gain_idx = g_idx
+        sdr.gain = avail[g_idx]
+        self._current_gain = avail[g_idx]
+        logger.info("Gain %s %.1f dB (%s)", direction, avail[g_idx], reason)
 
     def _process(self, iq: np.ndarray, encoder) -> Optional[bytes]:
         """Runs in executor thread: demodulate → encode → return AAC bytes."""
         try:
-            if self._band in ("fm", "wx"):
-                # Cheap IQ RMS check before the full DSP chain.  When squelched
-                # we skip everything (resample, filters, Hilbert, spectral sub,
-                # AGC) and return silence directly.  last_iq_rms is updated so
-                # the software gain controller keeps working.
-                iq_rms = float(np.sqrt(np.mean(iq.real**2 + iq.imag**2)))
-                if self._demod is not None:
-                    self._demod.last_iq_rms = iq_rms
+            # Local refs: retune() swaps these from the event loop while a
+            # block may be in flight here — one whole block on the old
+            # station is fine, a mid-block mix is not.
+            demod = self._demod
+            if demod is None:
+                return None
+            iq_rms = float(np.sqrt(np.mean(iq.real**2 + iq.imag**2)))
+            demod.last_iq_rms = iq_rms
 
+            if self._band == "fm":
                 # HD sideband sniff on the raw IQ (FM only) — every ~10 blocks
                 # (~2 s); the sidebands live at ±135-195 kHz, which the audio
                 # decimation below throws away.
@@ -290,7 +357,9 @@ class RadioPipeline:
                 if self._squelch_iq > 0 and iq_rms < self._squelch_iq:
                     n = self._squelch_silence_n
                     return encoder.encode(np.zeros(n, np.float32), np.zeros(n, np.float32))
-                l, r, composite = self._demod.process(iq)
+                l, r, composite = demod.process(iq)
+                if len(l) == 0:
+                    return None
                 self._squelch_silence_n = len(l)
                 if self._rds is not None:
                     # Fire-and-forget: submit RDS to its own thread so AAC
@@ -300,14 +369,13 @@ class RadioPipeline:
                     self._rds_executor.submit(self._rds_feed, composite.copy())
                 return encoder.encode(l, r)
 
-            elif self._band in ("am", "scanner"):
-                iq_rms = float(np.sqrt(np.mean(iq.real**2 + iq.imag**2)))
-                if self._demod is not None:
-                    self._demod.last_iq_rms = iq_rms
+            elif self._band in ("am", "scanner", "wx"):
                 if self._squelch_iq > 0 and iq_rms < self._squelch_iq:
                     n = self._squelch_silence_n
                     return encoder.encode(np.zeros(n, np.float32))
-                mono = self._demod.process(iq)
+                mono = demod.process(iq)
+                if len(mono) == 0:
+                    return None
                 self._squelch_silence_n = len(mono)
                 return encoder.encode(mono)
 
@@ -343,7 +411,7 @@ class RadioPipeline:
         d: dict = {
             "iq_rms": float(getattr(self._demod, "last_iq_rms", 0.0)),
         }
-        if self._band in ("fm", "wx"):
+        if self._band == "fm":
             d["composite_rms"] = float(getattr(self._demod, "last_composite_rms", 0.0))
             d["pilot_rms"]     = float(getattr(self._demod, "last_pilot_rms",     0.0))
             d["noise_rms"]     = float(getattr(self._demod, "last_noise_rms",     0.0))
@@ -356,9 +424,14 @@ class RadioPipeline:
         return d
 
     def _make_demod(self, band: str, freq_hz: float, deemphasis_us: int, stereo_mode: str = "auto"):
-        if band in ("fm", "wx"):
+        if band == "fm":
             return FmStereoDemodulator(deemphasis_us=deemphasis_us, stereo_mode=stereo_mode,
                                        ss_executor=self._ss_executor)
+        elif band == "wx":
+            # NOAA weather radio is narrowband FM (5 kHz deviation), not
+            # broadcast WFM — the stereo demod expected 75 kHz deviation
+            # and produced quiet audio with 10 kHz of pure noise on top.
+            return NfmDemodulator()
         elif band == "scanner" and _AVIATION_LO <= freq_hz <= _AVIATION_HI:
             return AmDemodulator()
         elif band == "scanner":

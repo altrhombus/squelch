@@ -47,10 +47,11 @@ icecast:
   port: 8001
   source_password: "changeme"
   mount: "/radio"
-  # false (default): connect only while someone is listening or recording,
-  #   preserving DSP idle-suspend — the mount disappears while Squelch is idle.
+  # false (default): connect only while someone is listening or recording —
+  #   the mount disappears while Squelch is idle, and the SDR dongle powers
+  #   down entirely (tuner off, no USB transfers).
   # true: keep the mount live whenever a station is tuned; the Pi runs the
-  #   DSP continuously even with no listeners (more CPU/heat).
+  #   SDR and DSP continuously even with no listeners (more CPU/heat).
   keep_alive: false
 
 # Default station presets loaded on first run (can be edited in the UI)

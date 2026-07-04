@@ -5,21 +5,25 @@ Input:  complex64 IQ samples at 2.4 MHz (from pyrtlsdr)
 Output: (left, right) float32 arrays at 48 kHz + FM composite float32 at 240 kHz for RDS
 
 Pipeline per block:
-  IQ (2.4 MHz) → resample ×1/10 → 240 kHz complex
-  → phase discriminator → FM composite float
-  → L+R: LPF 15 kHz → decimate ×5 → 48 kHz
-  → pilot BPF 17-21 kHz → Hilbert → 2× phase → 38 kHz carrier
+  IQ (1.2 MHz) → stateful resample ×1/5 → 240 kHz complex
+  → phase discriminator (carry sample across blocks) → FM composite float
+  → L+R: LPF 15 kHz → decimate ×5 (phase-continuous) → 48 kHz
+  → pilot recovery (heterodyne + stateful LPF) → 2× phase → 38 kHz carrier
   → L-R: BPF 23-53 kHz → × carrier → LPF 15 kHz → decimate ×5 → 48 kHz
   → matrix (L+R ± L-R) / 2
   → de-emphasis (75 µs US, first-order IIR)
 
-Filter state is maintained between blocks for seamless streaming.
+All state — IIR zi, resampler history, mixer phase, decimation phase —
+is maintained between blocks, so consecutive process() calls behave
+exactly like one continuous run (no block-rate edge artifacts).
 """
 
 import numpy as np
 from concurrent.futures import wait as _futures_wait, FIRST_EXCEPTION
-from scipy.signal import butter, sosfilt, lfilter, resample_poly, hilbert
+from scipy.signal import butter, sosfilt, lfilter
 from scipy.fft import rfft as _rfft, irfft as _irfft
+
+from .dsp import PilotRecovery, StatefulResampler
 
 # Use pyfftw as the scipy.fft backend if available — FFTW uses ARM NEON SIMD
 # on Pi 4 and is significantly faster than the default pocketfft for the fixed
@@ -91,7 +95,7 @@ _PHYS_SCALE   = 200.0
 # by the strong formants covers the inter-formant floor).
 # Applied to the OUTPUT gain only — DD state (prev_gain) retains the unfloored
 # Wiener value so the temporal smoother's feedback is not distorted.
-# Signal quality (blend factor 0–1) is passed in at call time.
+# Signal quality (smoothed noise_gate, 0–1) is passed in at call time.
 _WIENER_FLOOR        = 0.24   # −12 dB — weak-signal floor (blend → 0)
 _WIENER_FLOOR_STRONG = 0.10   # −20 dB — strong-signal floor (blend → 1)
 
@@ -282,9 +286,9 @@ class _SpectralSubtractor:
             self._prev_gamma = gamma
 
             # Adaptive gain floor — interpolated between weak (0.24) and strong
-            # (0.10) based on signal_quality (blend factor passed in from the
-            # demodulator).  Preserves anti-watery floor on weak signals; reduces
-            # residual LF/HF noise floor on strong signals heard on headphones.
+            # (0.10) based on signal_quality (smoothed noise_gate passed in
+            # from the demodulator).  Preserves anti-watery floor on weak
+            # signals; reduces residual LF/HF noise on strong signals.
             floor  = (_WIENER_FLOOR_STRONG
                       + (1.0 - signal_quality) * (_WIENER_FLOOR - _WIENER_FLOOR_STRONG))
             gain_f = np.maximum(gain, floor)
@@ -355,7 +359,6 @@ class FmStereoDemodulator:
         # Wiener filter now handles that pre-de-emphasis with better SNR estimates,
         # so the narrow path was discarding real programme content unnecessarily.
         self._lpr_sos        = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
-        self._pilot_sos      = butter(4, [17_000, 21_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_sos        = butter(4, [23_000, 53_000],    'bandpass', fs=_DEMOD_RATE, output='sos')
         self._lmr_lp_sos     = butter(8, 15_000,              'lowpass',  fs=_DEMOD_RATE, output='sos')
         # Narrow L-R path at 11 kHz (was 8 kHz).  Blended toward this on weak
@@ -371,11 +374,26 @@ class FmStereoDemodulator:
 
         # --- per-block filter states ---
         self._lpr_zi         = _zero_zi(self._lpr_sos)
-        self._pilot_zi       = _zero_zi(self._pilot_sos)
         self._lmr_zi         = _zero_zi(self._lmr_sos)
         self._lmr_lp_zi      = _zero_zi(self._lmr_lp_sos)
         self._lmr_narr_zi    = _zero_zi(self._lmr_narr_sos)
         self._noise_zi       = _zero_zi(self._noise_sos)
+
+        # --- stateful channel decimator + analytic pilot recovery ---
+        # StatefulResampler carries FIR history across blocks (a bare
+        # resample_poly restarted its filter every block, leaving a ~4.6 Hz
+        # edge transient).  PilotRecovery replaces the old pilot BPF +
+        # FFT-hilbert pair: same carrier phase, no block-edge phase jumps,
+        # and no large FFTs.
+        self._chan_dec = StatefulResampler(1, _CHAN_DECIM)
+        self._pilot_rec = PilotRecovery(_DEMOD_RATE)
+        # Last decimated IQ sample — carried so the phase discriminator is
+        # continuous across blocks (and output length matches input length).
+        self._prev_iq = None
+        # Audio ×5 decimation phase.  Block lengths aren't multiples of 5,
+        # so a bare [::5] would shift the 48 kHz output grid at every block
+        # boundary (~±2 samples of timing jitter at the block rate).
+        self._dec_phase = 0
 
         # --- de-emphasis IIR (first-order) ---
         dt    = 1.0 / _AUDIO_RATE
@@ -414,6 +432,15 @@ class FmStereoDemodulator:
         self._noise_rms_smooth = 0.0    # block-level EMA of discriminator noise_rms
         self._noise_rms_init   = False  # snaps on first block; same pattern as _blend_init
 
+        # --- signal-quality smoothing for the Wiener floor ---
+        # noise_gate (SNR from the 65-90 kHz discriminator noise band) is the
+        # right quality input for the adaptive Wiener floor: blend was used
+        # before, but blend is forced to 0 in mono mode, which pinned strong
+        # mono-mode signals to the conservative weak-signal floor (−12 dB).
+        # Same snap-on-first-block + asymmetric smoothing as blend.
+        self._qual_smooth = 0.0
+        self._qual_init   = False
+
         # --- audio AGC state ---
         # Fast warmup for the first 20 blocks (~2 s) so the audio snaps to
         # target level immediately after tuning, then hands off to the slow
@@ -447,15 +474,22 @@ class FmStereoDemodulator:
         Process one IQ block.
         Returns (left_48k, right_48k, composite_240k) as float32.
         """
-        # 1. Decimate ×5 (1.2 MHz → 240 kHz).  resample_poly uses SIMD-optimised
-        #    upfirdn internally and is significantly faster than lfilter for
-        #    large arrays.  The minor block-edge transient it introduces is
-        #    inaudible compared to the queue-overflow dropouts that the slower
-        #    lfilter approach was causing.
-        demod_iq = resample_poly(iq, 1, _CHAN_DECIM).astype(np.complex64)
+        # 1. Decimate ×5 (1.2 MHz → 240 kHz).  StatefulResampler wraps
+        #    resample_poly's SIMD-optimised polyphase FIR with carried input
+        #    history, so consecutive blocks form one continuous stream (a
+        #    bare per-block resample_poly restarted the filter each call and
+        #    left a ~4.6 Hz edge transient).
+        demod_iq = self._chan_dec.process(iq).astype(np.complex64)
+        if demod_iq.size == 0:
+            empty = np.zeros(0, dtype=np.float32)
+            return empty, empty, empty
 
-        # 2. FM phase discriminator → composite baseband
-        z = demod_iq[1:] * np.conj(demod_iq[:-1])
+        # 2. FM phase discriminator → composite baseband.  The last sample
+        #    of the previous block seeds the first phase difference, so the
+        #    output is continuous and length-preserving across blocks.
+        prev = self._prev_iq if self._prev_iq is not None else demod_iq[:1]
+        self._prev_iq = demod_iq[-1:].copy()
+        z = demod_iq * np.conj(np.concatenate((prev, demod_iq[:-1])))
         composite = (np.angle(z) * (_DEMOD_RATE / (2.0 * np.pi * _MAX_DEV))).astype(np.float64)
 
         # FM click blanking — two stages:
@@ -479,22 +513,28 @@ class FmStereoDemodulator:
             _xi            = np.where(~_ck)[0]
             composite[_ck] = np.interp(np.where(_ck)[0], _xi, composite[_xi])
 
+        # Audio ×5 decimation phase for this block — shared by the L+R and
+        # both L-R paths so the stereo matrix stays sample-aligned, advanced
+        # at the end so the 48 kHz output grid is continuous across blocks.
+        _p5 = self._dec_phase
+
         # 3. L+R: single 15 kHz path — full FM audio bandwidth.
         #    HF noise on weak signals is handled by the Wiener filter (step 9).
         lpr_full, self._lpr_zi = sosfilt(self._lpr_sos, composite, zi=self._lpr_zi)
-        lpr_wide = lpr_full[::_AUDIO_DECIM].astype(np.float32)
+        lpr_wide = lpr_full[_p5::_AUDIO_DECIM].astype(np.float32)
 
-        # 4. Pilot: BPF 17–21 kHz for carrier generation
-        pilot, self._pilot_zi = sosfilt(self._pilot_sos, composite, zi=self._pilot_zi)
+        # 4. Analytic pilot A·e^{jφ} via heterodyne + stateful LPF (see
+        #    PilotRecovery) — replaces the old BPF + per-block FFT hilbert,
+        #    which left carrier phase discontinuities at block edges.
+        pilot_a = self._pilot_rec.process(composite)
 
         # 5. L-R subcarrier: BPF 23–53 kHz
         lmr_band, self._lmr_zi = sosfilt(self._lmr_sos, composite, zi=self._lmr_zi)
 
-        # 6. Generate 38 kHz carrier via Hilbert squaring of pilot.
-        #    hilbert(pilot) ≈ A·e^{jφ}; squaring → A²·e^{j2φ} at 38 kHz.
-        #    Normalise to unit amplitude so pilot level doesn't AM-modulate
-        #    the L-R demodulation product (which caused background static).
-        pilot_a   = hilbert(pilot).astype(np.complex64)
+        # 6. Generate 38 kHz carrier by squaring the analytic pilot:
+        #    (A·e^{jφ})² → A²·e^{j2φ} at 38 kHz.  Normalise to unit
+        #    amplitude so pilot level doesn't AM-modulate the L-R
+        #    demodulation product (which caused background static).
         c38_raw   = (pilot_a ** 2)
         carrier38 = (c38_raw / (np.abs(c38_raw) + 1e-10)).real.astype(np.float64)
 
@@ -503,8 +543,9 @@ class FmStereoDemodulator:
         lmr_demod                    = lmr_band * carrier38 * 2.0
         lmr_wide_full, self._lmr_lp_zi  = sosfilt(self._lmr_lp_sos,   lmr_demod, zi=self._lmr_lp_zi)
         lmr_narr_full, self._lmr_narr_zi = sosfilt(self._lmr_narr_sos, lmr_demod, zi=self._lmr_narr_zi)
-        lmr_wide = lmr_wide_full[::_AUDIO_DECIM].astype(np.float32)
-        lmr_narr = lmr_narr_full[::_AUDIO_DECIM].astype(np.float32)
+        lmr_wide = lmr_wide_full[_p5::_AUDIO_DECIM].astype(np.float32)
+        lmr_narr = lmr_narr_full[_p5::_AUDIO_DECIM].astype(np.float32)
+        self._dec_phase = (_p5 - len(composite)) % _AUDIO_DECIM
 
         # 8. Stereo blend based on pilot RMS and raw IQ signal strength.
         #
@@ -515,7 +556,10 @@ class FmStereoDemodulator:
         #      91.7  IQ 0.062 → iq_gate≈0.08  → blend≈ 8% (near-mono)
         #      88.9  IQ 0.088 → iq_gate≈0.25  → blend≈18%
         #      102.9 IQ 0.282 → iq_gate≈1.0   → blend≈77% (full stereo)
-        pilot_rms = float(np.sqrt(np.mean(pilot ** 2)))
+        # RMS of the real pilot equals sqrt(mean|analytic|²/2) — for a 10%
+        # pilot both measure A/√2 ≈ 0.0707, so the empirically calibrated
+        # gate thresholds below are unchanged.
+        pilot_rms = float(np.sqrt(np.mean(np.abs(pilot_a) ** 2) / 2.0))
         iq_rms    = float(np.sqrt(np.mean(np.abs(iq) ** 2)))
         self.last_pilot_rms     = pilot_rms
         self.last_iq_rms        = iq_rms
@@ -544,6 +588,16 @@ class FmStereoDemodulator:
             1.0 - (noise_rms / (pilot_rms + 1e-6)) / _NOISE_RATIO_SCALE,
             0.0, 1.0,
         ))
+
+        # Smoothed signal quality for the adaptive Wiener floor.  Based on
+        # noise_gate (actual SNR) rather than blend, so forced-mono listening
+        # on a strong signal still gets the deep strong-signal floor.
+        if not self._qual_init:
+            self._qual_smooth = noise_gate
+            self._qual_init   = True
+        else:
+            alpha_q = 0.3 if noise_gate < self._qual_smooth else 0.05
+            self._qual_smooth += alpha_q * (noise_gate - self._qual_smooth)
 
         pilot_gate = float(np.clip((pilot_rms - 0.02) / 0.06, 0.0, 1.0))
 
@@ -599,20 +653,21 @@ class FmStereoDemodulator:
         r32       = r.astype(np.float32)
         rms_pre   = float(np.sqrt(np.mean(l32 ** 2 + r32 ** 2) / 2)) + 1e-10
         in_noise  = rms_pre <= _AGC_GATE
+        quality = self._qual_smooth
         if self._ss_executor is not None:
             # Submit L and R to the dedicated 2-worker pool so they run on
             # separate cores.  concurrent.futures.wait() blocks this executor
             # thread (not the event loop) until both channels are done.
             f_l = self._ss_executor.submit(
-                self._ss_l.process, l32, in_noise, self._noise_rms_smooth, blend)
+                self._ss_l.process, l32, in_noise, self._noise_rms_smooth, quality)
             f_r = self._ss_executor.submit(
-                self._ss_r.process, r32, in_noise, self._noise_rms_smooth, blend)
+                self._ss_r.process, r32, in_noise, self._noise_rms_smooth, quality)
             _futures_wait([f_l, f_r], return_when=FIRST_EXCEPTION)
             l32 = f_l.result()
             r32 = f_r.result()
         else:
-            l32 = self._ss_l.process(l32, in_noise, self._noise_rms_smooth, blend)
-            r32 = self._ss_r.process(r32, in_noise, self._noise_rms_smooth, blend)
+            l32 = self._ss_l.process(l32, in_noise, self._noise_rms_smooth, quality)
+            r32 = self._ss_r.process(r32, in_noise, self._noise_rms_smooth, quality)
 
         # 9b. De-emphasis (75 µs)
         l, self._de_l_zi = lfilter(self._de_b, self._de_a, l32, zi=self._de_l_zi)
