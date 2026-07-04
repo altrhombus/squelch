@@ -46,6 +46,26 @@ def _zero_zi_c(sos: np.ndarray) -> np.ndarray:
     return np.zeros((sos.shape[0], 2), dtype=np.complex128)
 
 
+def _agc_step(gain: float, rms: float) -> float:
+    """Shared asymmetric AGC: fast attack / slow release toward 0.25 RMS.
+
+    Gated on silence: during speech pauses the target (0.25/near-zero)
+    is enormous and even the slow release adds gain at ~2.5×/block, so
+    the first word after a pause came back +9-12 dB hot and clipping
+    (measured on a WX recording — heard as harsh sibilants).  Freezing
+    the gain while the post-gain level is below the gate holds the last
+    speech-appropriate value; the FM path gates its AGC the same way.
+    """
+    if rms * gain <= 0.04:
+        return gain
+    target = 0.25 / rms
+    if target < gain:
+        gain = 0.5 * gain + 0.5 * target     # fast attack
+    else:
+        gain = 0.97 * gain + 0.03 * target   # slow release
+    return float(np.clip(gain, 0.05, 50.0))
+
+
 class _CarrierOffsetEstimator:
     """Strongest signal's offset from the tuned frequency via power
     centroid over the decimated passband.
@@ -129,15 +149,8 @@ class AmDemodulator:
         env, self._dc_zi  = sosfilt(self._dc_sos,  env, zi=self._dc_zi)
         env, self._aud_zi = sosfilt(self._aud_sos, env, zi=self._aud_zi)
 
-        # Asymmetric AGC: fast attack (loud signal) / slow release (quiet).
-        # Prevents clipping on sudden loud carriers while avoiding pumping
-        # artefacts on voice.
         rms = float(np.sqrt(np.mean(env ** 2))) + 1e-10
-        target_gain = 0.25 / rms
-        if target_gain < self._gain:
-            self._gain = 0.5 * self._gain + 0.5 * target_gain   # fast attack
-        else:
-            self._gain = 0.97 * self._gain + 0.03 * target_gain  # slow release
+        self._gain = _agc_step(self._gain, rms)
         env = (env * self._gain).clip(-1.0, 1.0)
 
         return env.astype(np.float32)
@@ -233,13 +246,8 @@ class NfmDemodulator:
                                      noise_rms_smooth=self._noise_rms_smooth,
                                      ).astype(np.float64)
 
-        # Asymmetric AGC (fast attack / slow release)
         rms = float(np.sqrt(np.mean(audio ** 2))) + 1e-10
-        target_gain = 0.25 / rms
-        if target_gain < self._gain:
-            self._gain = 0.5 * self._gain + 0.5 * target_gain   # fast attack
-        else:
-            self._gain = 0.97 * self._gain + 0.03 * target_gain  # slow release
+        self._gain = _agc_step(self._gain, rms)
         audio = (audio * self._gain).clip(-1.0, 1.0)
 
         return audio.astype(np.float32)

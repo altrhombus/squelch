@@ -114,6 +114,35 @@ def test_nfm_noise_reduction_lowers_noise_floor():
     assert snr_nr > snr_raw * 2, f"NR gained only {10*np.log10(snr_nr/snr_raw):.1f} dB"
 
 
+def test_nfm_agc_does_not_overshoot_after_pause():
+    """Measured live on a WX recording: speech onsets after pauses came
+    back +9-12 dB hot (near-clipping — heard as harsh sibilants) because
+    the ungated AGC wound its gain up against near-silence.  With the
+    silence gate, the first block of speech after a long pause must be
+    at the same level as settled speech."""
+    n = BLOCK * 32
+    t = np.arange(n) / _SAMPLE_RATE
+    # 0.6 s sentences, 0.7 s pauses — WX cadence
+    talking = (t % 1.3) < 0.6
+    mod = talking * np.sin(2 * np.pi * 1_000 * t)
+    phase = 2 * np.pi * 4_000 * np.cumsum(mod) / _SAMPLE_RATE
+    rng = np.random.default_rng(5)
+    noise = 0.03 * (rng.standard_normal(n) + 1j * rng.standard_normal(n))
+    iq = (0.3 * np.exp(1j * phase) + noise).astype(np.complex64)
+
+    d = NfmDemodulator()
+    blocks = [d.process(iq[b * BLOCK:(b + 1) * BLOCK]) for b in range(32)]
+    rms = np.array([float(np.sqrt(np.mean(b ** 2))) for b in blocks])
+
+    # Sentence 3 starts at t=2.6 (block 24) — by then the noise reducer's
+    # MinStat warmup (which suppresses the pause-less first sentence and
+    # skews its AGC level) is over and the pipeline is in steady state.
+    onset  = rms[24]
+    steady = np.median(rms[25:28])
+    overshoot_db = 20 * np.log10(onset / (steady + 1e-12))
+    assert overshoot_db < 2.0, f"onset overshoot {overshoot_db:+.1f} dB"
+
+
 class _FakeSdr:
     def __init__(self, center=162.4e6):
         self.center_freq = center
