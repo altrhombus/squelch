@@ -28,6 +28,18 @@ const WX_CHANNELS = [
   { name: "WX7", freq: 162.525 },
 ];
 
+// Where each band starts when it has never been tuned on this device
+const BAND_START = { fm: 91.1, hd: 91.1, am: 1000, wx: 162.4, scanner: 121.5 };
+
+// FM and HD share one dial position: switching to HD means "this station,
+// in HD", not a jump to a separately remembered frequency.
+function bandMemKey(band) { return band === "hd" ? "fm" : band; }
+
+function savedBandFreq(band) {
+  const v = parseFloat(localStorage.getItem(`squelch.freq.${bandMemKey(band)}`));
+  return isNaN(v) ? BAND_START[band] : clamp(v, BANDS[band].min, BANDS[band].max);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────────────────────────────────────
@@ -45,6 +57,7 @@ let _prevTrackKey = "", _historyRefreshTimer = null;
 let _lastMeta = null, _mediaSessionReady = false;
 let _recTimer = null, _recStart = null;
 let _lastTrackChangeAt = Date.now();
+let _autoHdFreq = null;   // frequency already auto-switched to HD this visit
 let _presetMarks = [];        // frequencies of saved presets, drawn on the ruler
 let _scanEntry = null;        // keypad entry string while typing (scanner)
 
@@ -124,6 +137,7 @@ function formatDuration(s) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 let _commitTimer = null;
+let _pendingCommit = false;   // a local tune is in flight — don't let WS state fight it
 
 function setDisplayFreq(f, { commit = true } = {}) {
   displayFreq = clamp(f, BANDS[currentBand].min, BANDS[currentBand].max);
@@ -134,6 +148,7 @@ function setDisplayFreq(f, { commit = true } = {}) {
   updateWxActive();
   if (commit) {
     // Debounced: scrubs, arrow keys, and step taps coalesce into one tune.
+    _pendingCommit = true;
     clearTimeout(_commitTimer);
     _commitTimer = setTimeout(() => commitTune(), 300);
   }
@@ -141,6 +156,7 @@ function setDisplayFreq(f, { commit = true } = {}) {
 
 async function commitTune(band = currentBand, extra = {}) {
   cancelSeek();
+  _pendingCommit = false;
   const body = {
     frequency: snap(displayFreq, band),
     band,
@@ -148,6 +164,7 @@ async function commitTune(band = currentBand, extra = {}) {
     stereo_mode: "auto",
     ...extra,
   };
+  localStorage.setItem(`squelch.freq.${bandMemKey(band)}`, String(body.frequency));
   // Start the stream inside a user-gesture call stack when not already
   // playing (Safari autoplay policy); when playing, the <audio> element is
   // left alone — the backend retunes without dropping the connection.
@@ -190,7 +207,10 @@ function setBand(band, { retune = true } = {}) {
   rulerCanvas.setAttribute("aria-valuemax", b.max);
 
   loadSquelchUi(band);
-  setDisplayFreq(snap(displayFreq, band), { commit: false });
+  localStorage.setItem("squelch.band", band);
+  // Per-band memory: each band remembers its last tuned frequency on this
+  // device (FM → WX → back to FM used to clamp 162.4 into 108.0).
+  setDisplayFreq(savedBandFreq(band), { commit: false });
   if (retune) commitTune(band);
 }
 
@@ -277,17 +297,23 @@ function drawRuler() {
   ctx.fill();
 }
 
+let _scrubbing = false;   // finger on the ruler or momentum running
+
 function setupRuler() {
   let dragging = false, lastX = 0, lastT = 0, velocity = 0, moved = 0;
   let momentumRaf = null;
 
-  const stopMomentum = () => { if (momentumRaf) cancelAnimationFrame(momentumRaf); momentumRaf = null; };
+  const stopMomentum = () => {
+    if (momentumRaf) cancelAnimationFrame(momentumRaf);
+    momentumRaf = null;
+    _scrubbing = false;
+  };
 
   rulerCanvas.addEventListener("pointerdown", (e) => {
     if (!BANDS[currentBand].ruler) return;
     cancelSeek();
     stopMomentum();
-    dragging = true; moved = 0;
+    dragging = true; _scrubbing = true; moved = 0;
     lastX = e.clientX; lastT = performance.now(); velocity = 0;
     rulerCanvas.setPointerCapture(e.pointerId);
   });
@@ -308,6 +334,7 @@ function setupRuler() {
     dragging = false;
     if (moved < 5) {
       // Tap: jump to the frequency under the finger
+      _scrubbing = false;
       const rect = rulerCanvas.getBoundingClientRect();
       const f = displayFreq + (e.clientX - rect.left - rect.width / 2) / BANDS[currentBand].pxPerUnit;
       animateTo(snap(f));
@@ -325,10 +352,10 @@ function setupRuler() {
       momentumRaf = requestAnimationFrame(decay);
     };
     if (Math.abs(velocity) > 0.05) momentumRaf = requestAnimationFrame(decay);
-    else setDisplayFreq(snap(displayFreq));
+    else { _scrubbing = false; setDisplayFreq(snap(displayFreq)); }
   };
   rulerCanvas.addEventListener("pointerup", release);
-  rulerCanvas.addEventListener("pointercancel", () => { dragging = false; });
+  rulerCanvas.addEventListener("pointercancel", () => { dragging = false; _scrubbing = false; });
 
   // Trackpad / wheel
   rulerCanvas.addEventListener("wheel", (e) => {
@@ -577,6 +604,21 @@ function applyMeta(m) {
   if (m.event) return;   // event-only frames
   _lastMeta = m;
 
+  // The dial mirrors the ACTUAL radio — this covers loading the page
+  // while another device is listening, and tunes made elsewhere.  It
+  // stands down while the user is mid-interaction here (scrubbing,
+  // momentum, an uncommitted debounce, or a seek).
+  if (m.frequency && m.band && BANDS[m.band]
+      && !_scrubbing && !_pendingCommit && !seeking && _scanEntry === null) {
+    const f = m.band === "am" ? m.frequency / 1e3 : m.frequency / 1e6;
+    if (m.band !== currentBand) {
+      setBand(m.band, { retune: false });
+    }
+    if (Math.abs(f - displayFreq) > BANDS[m.band].step / 2) {
+      setDisplayFreq(clamp(f, BANDS[m.band].min, BANDS[m.band].max), { commit: false });
+    }
+  }
+
   // Station name + title
   if (m.station_name) {
     $("station-name").textContent = m.station_name;
@@ -651,20 +693,35 @@ function applyMeta(m) {
   pty.classList.toggle("hidden", !m.pty);
   $("stereo-badge").classList.toggle("hidden", !m.stereo);
 
+  // HD badge — the car-radio convention: HOLLOW badge = HD is available
+  // on this station (tap to switch), SOLID accent badge = you are
+  // actually listening to HD.  Zero ambiguity about which one you're in.
   const hd = $("hd-badge");
   const hdAvailable = !!m.hd_available && currentBand === "fm" && !m.hd_locked;
   hd.classList.toggle("hd-available", hdAvailable);
   hd.classList.toggle("hd-locked", !!m.hd_locked);
   hd.classList.toggle("hidden", !m.hd_locked && !hdAvailable);
   if (hdAvailable) {
-    hd.setAttribute("title", "HD Radio detected — tap to switch");
-    hd.setAttribute("aria-label", "HD Radio detected, tap to switch to HD");
+    hd.textContent = "HD available";
+    hd.setAttribute("title", "This station broadcasts HD — tap to switch");
+    hd.setAttribute("aria-label", "HD available on this station, tap to switch to HD");
   } else {
+    hd.textContent = "HD";
     hd.removeAttribute("title");
-    hd.setAttribute("aria-label", "HD Radio");
+    hd.setAttribute("aria-label", m.hd_locked ? "Listening in HD" : "HD Radio");
   }
   if (m.hd_locked && !_prevHdLocked) showToast("HD Radio locked");
   _prevHdLocked = !!m.hd_locked;
+
+  // Auto-HD (opt-in): when the station broadcasts HD, switch to it —
+  // once per frequency, so switching back to FM by hand is respected.
+  if (hdAvailable && localStorage.getItem("squelch.autohd") === "1"
+      && !_scrubbing && !_pendingCommit && !seeking
+      && _autoHdFreq !== snap(displayFreq)) {
+    _autoHdFreq = snap(displayFreq);
+    showToast("HD detected — switching");
+    tune(displayFreq, "hd");
+  }
 
   // Signal bars
   const bars = m.signal_bars || 0;
@@ -812,25 +869,39 @@ const DIAG_ROWS = [
 ];
 
 let _lastDiag = {};
+let _diagRows = null;   // key → { row, fill, num } — built once, updated in place
+
+function _buildDiagRows() {
+  const body = $("diag-body");
+  body.innerHTML = "";
+  _diagRows = {};
+  for (const [key, label] of DIAG_ROWS) {
+    const row = document.createElement("div");
+    row.className = "diag-row hidden";
+    row.innerHTML = `<span class="diag-label">${label}</span>
+      <span class="diag-track"><span class="diag-fill"></span></span>
+      <span class="diag-num">—</span>`;
+    body.appendChild(row);
+    _diagRows[key] = {
+      row, fill: row.querySelector(".diag-fill"), num: row.querySelector(".diag-num"),
+    };
+  }
+}
 
 function renderDiag(d, band) {
   _lastDiag = { ...d, band };
-  const body = $("diag-body");
   if ($("diag-popover").classList.contains("hidden")) return;
-  body.innerHTML = "";
-  for (const [key, label, maxVal, colorFn, fmt] of DIAG_ROWS) {
-    if (d[key] == null) continue;
+  if (!_diagRows) _buildDiagRows();
+  // Update in place so the CSS width/color transitions actually animate —
+  // rebuilding the DOM every WebSocket frame froze them as static lines.
+  for (const [key, , maxVal, colorFn, fmt] of DIAG_ROWS) {
+    const r = _diagRows[key];
+    if (d[key] == null) { r.row.classList.add("hidden"); continue; }
     const v = d[key];
-    const pct = Math.min(100, Math.abs(v) / maxVal * 100);
-    const row = document.createElement("div");
-    row.className = "diag-row";
-    row.innerHTML = `<span class="diag-label">${label}</span>
-      <span class="diag-track"><span class="diag-fill ${colorFn(v)}" style="width:${pct}%"></span></span>
-      <span class="diag-num">${fmt(v)}</span>`;
-    body.appendChild(row);
-  }
-  if (!body.children.length) {
-    body.innerHTML = '<p class="empty-hint">No diagnostics yet — tune a station.</p>';
+    r.row.classList.remove("hidden");
+    r.fill.style.width = Math.min(100, Math.abs(v) / maxVal * 100) + "%";
+    r.fill.className = "diag-fill " + colorFn(v);
+    r.num.textContent = fmt(v);
   }
 }
 
@@ -911,6 +982,19 @@ function setGlass(level, save = true) {
 
 document.querySelectorAll("#glass-seg .seg-btn").forEach(b =>
   b.addEventListener("click", () => setGlass(b.dataset.glass)));
+
+function setAutoHd(on, save = true) {
+  document.querySelectorAll("#autohd-seg .seg-btn").forEach(b => {
+    const active = b.dataset.autohd === (on ? "1" : "0");
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-checked", String(active));
+  });
+  if (save) localStorage.setItem("squelch.autohd", on ? "1" : "0");
+  if (!on) _autoHdFreq = null;
+}
+
+document.querySelectorAll("#autohd-seg .seg-btn").forEach(b =>
+  b.addEventListener("click", () => setAutoHd(b.dataset.autohd === "1")));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Media Session
@@ -1332,10 +1416,12 @@ setupSquelch();
 setupAdaptiveContrast();
 
 setGlass(localStorage.getItem("squelch.glass") || "regular", false);
+setAutoHd(localStorage.getItem("squelch.autohd") === "1", false);
 switchLibTab(localStorage.getItem("squelch.libTab") || "presets", false);
 activatePanel(localStorage.getItem("squelch.panel") || "radio", false);
-setBand("fm", { retune: false });
-setDisplayFreq(91.1, { commit: false });
+// Start on the last band/frequency used on this device; the first
+// WebSocket state message overrides both if the radio is already live.
+setBand(localStorage.getItem("squelch.band") || "fm", { retune: false });
 
 connectWs();
 loadPresets();

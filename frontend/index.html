@@ -7,6 +7,9 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0a0a0c" />
   <title>Squelch</title>
+  <link rel="manifest" href="/static/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/static/icon-180.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -195,6 +198,12 @@
         <button class="seg-btn active" data-glass="regular" role="radio" aria-checked="true">Regular</button>
         <button class="seg-btn" data-glass="tinted"  role="radio" aria-checked="false">Tinted</button>
       </div>
+      <label class="settings-label" id="autohd-label">Switch to HD automatically</label>
+      <div class="seg" id="autohd-seg" role="radiogroup" aria-labelledby="autohd-label">
+        <button class="seg-btn active" data-autohd="0" role="radio" aria-checked="true">Off</button>
+        <button class="seg-btn" data-autohd="1" role="radio" aria-checked="false">On</button>
+      </div>
+      <p class="settings-hint muted">When a station broadcasts HD, tune to it as soon as it's detected. Switching back to FM by hand is respected until you change stations.</p>
     </div>
   </div>
 

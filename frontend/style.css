@@ -305,14 +305,21 @@ html, body {
   text-shadow: 0 0 12px var(--accent-glow);
 }
 
-#hd-badge { transition: color var(--dur-2), border-color var(--dur-2); }
+/* HD badge — hollow = available on this station (tap to switch),
+   solid accent = actually listening in HD.  Car-radio convention. */
+#hd-badge { transition: color var(--dur-2), border-color var(--dur-2), background var(--dur-2); }
 #hd-badge.hd-available {
   color: var(--accent-dynamic);
-  border-color: var(--accent-glow);
+  background: transparent;
+  border-color: var(--accent-dynamic);
   cursor: pointer;
   animation: hd-breathe 2.4s ease-in-out infinite;
 }
-#hd-badge.hd-locked { color: var(--ink); border-color: var(--line-strong); }
+#hd-badge.hd-locked {
+  color: #fff;
+  background: var(--accent-dynamic);
+  border-color: transparent;
+}
 
 @keyframes hd-breathe {
   0%, 100% { box-shadow: 0 0 0 0 transparent; }
@@ -708,6 +715,8 @@ input[type="range"]::-moz-range-thumb {
 
 .settings-body { display: flex; flex-direction: column; gap: 8px; }
 .settings-label { font-size: var(--text-sm); font-weight: 600; color: var(--ink-muted); }
+.settings-label:not(:first-child) { margin-top: 8px; }
+.settings-hint { font-size: var(--text-xs); line-height: 1.45; }
 
 /* Diagnostics rows */
 .diag-body { display: flex; flex-direction: column; gap: 8px; }
@@ -720,9 +729,11 @@ input[type="range"]::-moz-range-thumb {
 }
 .diag-label { color: var(--ink-muted); font-weight: 600; }
 .diag-track {
+  display: block;
   height: 5px; border-radius: 3px; background: var(--fill-2); overflow: hidden;
 }
 .diag-fill {
+  display: block;
   height: 100%; border-radius: 3px; width: 0;
   transition: width 0.6s var(--smooth), background 0.6s;
 }
