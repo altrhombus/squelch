@@ -265,6 +265,10 @@ class RdsDecoder:
         self._bad_blocks = 0             # consecutive CRC failures while synced
         self._blocks: list = []          # assembled 16-bit data words (None = lost)
         self._block_types: list = []
+        self._blocks_corr: list = []     # per-block: needed burst correction
+        # Corrected-group confirmation cache (see _decode_group): payload
+        # of the last corrected reception, keyed by group type + segment.
+        self._corr_pending: dict = {}
 
         # RDS fields
         self._pi: Optional[int]     = None
@@ -446,6 +450,7 @@ class RdsDecoder:
                 self._synced = True
                 self._blocks = [(word26 >> 10) & 0xFFFF]
                 self._block_types = ["A"]
+                self._blocks_corr = [False]
                 self._block_pos = 1
                 self._bad_blocks = 0
                 self._bit_buf.clear()
@@ -466,9 +471,11 @@ class RdsDecoder:
                 self._synced = False
                 self._blocks.clear()
                 self._block_types.clear()
+                self._blocks_corr.clear()
                 return
             self._blocks.append(None)
             self._block_types.append(None)
+            self._blocks_corr.append(False)
         else:
             # Only a CLEAN block fully resets the failure counter.  A
             # corrected block merely decrements it: garbage bits get
@@ -482,15 +489,18 @@ class RdsDecoder:
                 self._bad_blocks = 0
             self._blocks.append(data)
             self._block_types.append(block_type)
+            self._blocks_corr.append(corrected)
 
         self._block_pos = (self._block_pos + 1) % 4
         if self._block_pos == 0:
             if all(b is not None for b in self._blocks):
-                self._decode_group(self._blocks, self._block_types)
+                self._decode_group(self._blocks, self._block_types,
+                                   corrected=any(self._blocks_corr))
             self._blocks.clear()
             self._block_types.clear()
+            self._blocks_corr.clear()
 
-    def _decode_group(self, blocks: list[int], types: list[str]):
+    def _decode_group(self, blocks: list, types: list, corrected: bool = False):
         if len(blocks) < 4:
             return
 
@@ -527,6 +537,25 @@ class RdsDecoder:
         pty_name = _PTY.get(self._pty, "")
         if pty_name:
             update["pty"] = pty_name
+
+        # Corrected-group confirmation.  Burst correction can mis-correct a
+        # >2-bit error into a DIFFERENT valid codeword (observed live:
+        # "Party In" → "Partx8In" reaching the display).  PI and PTY are
+        # double-debounced above; any other payload from a group that
+        # needed correction must be received identically twice before it
+        # reaches the text handlers.  Clean receptions are never delayed —
+        # a real segment comes around again within a cycle or two, while
+        # the same mis-correction repeating is vanishingly unlikely.
+        if corrected:
+            key = (group_type, b0, b & 0x1F)   # group + A/B flag + segment
+            if self._corr_pending.get(key) != (b, c, d):
+                if len(self._corr_pending) > 64:
+                    self._corr_pending.clear()
+                self._corr_pending[key] = (b, c, d)
+                if update:
+                    self._cb(update)   # PI/PTY still flow immediately
+                return
+            del self._corr_pending[key]
 
         if group_type == 0:          # Group 0A/0B — PS name
             seg       = b & 0x3

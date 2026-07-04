@@ -102,12 +102,16 @@ def test_clean_stream_decodes_ps():
 
 
 def test_single_bit_error_is_corrected():
+    """Corrected text needs two identical receptions (mis-correction
+    guard), so the corrupted cycle is pushed twice — detect-only decoding
+    would never assemble a PS at all."""
     updates = []
     dec = make_decoder(updates)
     words = ps_cycle_words(PI, PS_TEXT)
-    # Flip one bit in block D of every group — detect-only decoding would
-    # never assemble a PS at all.
-    push_words(dec, words, flip={3: 1 << 7, 7: 1 << 20, 11: 1 << 0, 15: 1 << 13})
+    flips = {3: 1 << 7, 7: 1 << 20, 11: 1 << 0, 15: 1 << 13}   # block D each group
+    push_words(dec, words, flip=flips)
+    assert PS_TEXT not in ps_values(updates)   # first pass: held for confirmation
+    push_words(dec, words, flip=flips)
     assert PS_TEXT in ps_values(updates)
 
 
@@ -116,7 +120,25 @@ def test_two_bit_burst_is_corrected():
     dec = make_decoder(updates)
     words = ps_cycle_words(PI, PS_TEXT)
     push_words(dec, words, flip={5: 0b11 << 9})
+    push_words(dec, words, flip={5: 0b11 << 9})
     assert PS_TEXT in ps_values(updates)
+
+
+def test_miscorrection_does_not_repeat_so_never_displays():
+    """A >2-bit error can be 'corrected' into a different valid codeword
+    (observed live: 'Party In' → 'Partx8In').  The mis-corrected payload
+    differs between receptions once the real block comes through clean,
+    so the confirmation gate must keep the garbage off the text path."""
+    updates = []
+    dec = make_decoder(updates)
+    words = ps_cycle_words(PI, PS_TEXT)
+    # One reception carries a 4-bit error in block D of segment 2 that the
+    # corrector may map to a wrong-but-valid word; the next is clean.
+    push_words(dec, words, flip={11: 0b1001 << 6})
+    push_words(dec, words)
+    vals = ps_values(updates)
+    assert vals == [] or vals == [PS_TEXT]   # never a corrupted variant
+    assert PS_TEXT in vals
 
 
 def test_uncorrectable_block_drops_group_but_holds_sync():
