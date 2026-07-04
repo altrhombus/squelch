@@ -574,8 +574,11 @@ class FmStereoDemodulator:
         # of sample-to-sample rotation is magnitude-weighted (robust in
         # noise); gated on pilot presence so mono stations report nothing.
         if pilot_rms > 0.02:
+            # pilot_a is the re-rotated passband analytic signal, so its
+            # phasor advances at the full pilot frequency — subtract the
+            # 19 kHz nominal to get the offset.
             dphi = float(np.angle(np.mean(pilot_a[1:] * np.conj(pilot_a[:-1]))))
-            off  = dphi * _DEMOD_RATE / (2.0 * np.pi)
+            off  = dphi * _DEMOD_RATE / (2.0 * np.pi) - 19_000.0
             if not self._pilot_off_init:
                 self._pilot_off_smooth = off
                 self._pilot_off_init   = True
