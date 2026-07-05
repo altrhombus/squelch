@@ -48,7 +48,8 @@ let currentBand  = "fm";
 let displayFreq  = 91.1;      // what the ruler/readout show (live during scrub)
 let isPlaying    = false;
 let isRecording  = false;
-let seeking      = null;      // {dir, cancel} while seek-scan runs
+let _seekActive  = false;     // a server-side seek scan is running
+let _seekStartedAt = 0;       // grace window so an in-flight stale frame can't cancel it
 let ws = null, wsReconnectTimer = null;
 
 let _prevHasArt = false, _prevArtUrl = "", _prevArtVersion = -1, _prevHdLocked = false;
@@ -404,7 +405,10 @@ function setupStepButton(btn, dir) {
   });
   const finish = () => {
     clearTimeout(holdTimer);
-    if (!held && !seeking) {
+    // A short press steps one channel; a long press already started a
+    // server-side seek (which keeps running after release, car-radio
+    // style — tap anything to stop).
+    if (!held && !_seekActive) {
       const b = BANDS[currentBand];
       setDisplayFreq(snap(displayFreq + dir * b.step));
     }
@@ -421,46 +425,29 @@ function setupStepButton(btn, dir) {
   });
 }
 
+// Seeking is done server-side: the pipeline sweeps the band between block
+// reads (measuring each channel's pilot/noise directly, no polling race)
+// and stops on the next listenable station.  Clients just start/stop it
+// and follow the needle via the /ws frequency + `seeking` updates.
 async function startSeek(dir, btn) {
-  if (seeking) return;
-  const b = BANDS[currentBand];
-  if (!b.ruler && currentBand !== "wx") return;   // seek makes no sense on scanner keypad
-  let cancelled = false;
-  seeking = { dir, cancel: () => { cancelled = true; } };
+  if (currentBand !== "fm") return;   // FM only for now
+  if (_seekActive) { cancelSeek(); return; }
+  _seekActive = true;
+  _seekStartedAt = Date.now();
+  if (!isPlaying) _startStream();
+  document.querySelectorAll(".btn-chev").forEach(b => b.classList.remove("seeking"));
   btn.classList.add("seeking");
   $("seek-state").classList.remove("hidden");
-
-  const startFreq = displayFreq;
-  let f = displayFreq;
-  const maxSteps = Math.ceil((b.max - b.min) / b.seekStep);
-  try {
-    for (let i = 0; i < maxSteps && !cancelled; i++) {
-      f += dir * b.seekStep;
-      if (f > b.max + 1e-9) f = b.min;     // wrap like a car radio
-      if (f < b.min - 1e-9) f = b.max;
-      f = snap(f);
-      clearTimeout(_commitTimer);
-      setDisplayFreq(f, { commit: false });
-      if (!isPlaying) _startStream();
-      await api("POST", "/tune", { frequency: f, band: currentBand, gain: "auto", stereo_mode: "auto" });
-      await new Promise(r => setTimeout(r, 750));   // let the signal estimate settle
-      if (cancelled) break;
-      const st = await api("GET", "/status");
-      if ((st.signal_bars || 0) >= 3) {
-        showToast(`Found ${formatFreq(f)} ${b.unit}`);
-        break;
-      }
-      if (Math.abs(f - startFreq) < b.seekStep / 2) break;   // full lap, nothing found
-    }
-  } finally {
-    seeking = null;
-    btn.classList.remove("seeking");
-    $("seek-state").classList.add("hidden");
-  }
+  const res = await api("POST", "/seek", { direction: dir > 0 ? "up" : "down" });
+  if (!res.seeking) cancelSeek();
 }
 
 function cancelSeek() {
-  if (seeking) seeking.cancel();
+  if (!_seekActive) return;
+  _seekActive = false;
+  document.querySelectorAll(".btn-chev").forEach(b => b.classList.remove("seeking"));
+  $("seek-state").classList.add("hidden");
+  api("POST", "/seek/stop");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -604,12 +591,27 @@ function applyMeta(m) {
   if (m.event) return;   // event-only frames
   _lastMeta = m;
 
+  // Keep the seek UI in sync with the server's authoritative flag: a seek
+  // that finds a station (or exhausts the band) clears it here; a seek
+  // started from another device lights it up here.  A brief grace window
+  // ignores a stale in-flight frame that predates our own start request.
+  const seekGrace = Date.now() - _seekStartedAt < 1500;
+  if (m.seeking && !_seekActive) {
+    _seekActive = true;
+    $("seek-state").classList.remove("hidden");
+  } else if (!m.seeking && _seekActive && !seekGrace) {
+    _seekActive = false;
+    $("seek-state").classList.add("hidden");
+    document.querySelectorAll(".btn-chev").forEach(b => b.classList.remove("seeking"));
+  }
+
   // The dial mirrors the ACTUAL radio — this covers loading the page
-  // while another device is listening, and tunes made elsewhere.  It
-  // stands down while the user is mid-interaction here (scrubbing,
-  // momentum, an uncommitted debounce, or a seek).
+  // while another device is listening, tunes made elsewhere, and the
+  // needle sweeping during a server-side seek.  It stands down only while
+  // THIS user is mid-interaction (scrubbing, an uncommitted debounce, or
+  // keypad entry).
   if (m.frequency && m.band && BANDS[m.band]
-      && !_scrubbing && !_pendingCommit && !seeking && _scanEntry === null) {
+      && !_scrubbing && !_pendingCommit && _scanEntry === null) {
     const f = m.band === "am" ? m.frequency / 1e3 : m.frequency / 1e6;
     if (m.band !== currentBand) {
       setBand(m.band, { retune: false });
@@ -716,7 +718,7 @@ function applyMeta(m) {
   // Auto-HD (opt-in): when the station broadcasts HD, switch to it —
   // once per frequency, so switching back to FM by hand is respected.
   if (hdAvailable && localStorage.getItem("squelch.autohd") === "1"
-      && !_scrubbing && !_pendingCommit && !seeking
+      && !_scrubbing && !_pendingCommit && !_seekActive && !m.seeking
       && _autoHdFreq !== snap(displayFreq)) {
     _autoHdFreq = snap(displayFreq);
     showToast("HD detected — switching");

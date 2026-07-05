@@ -52,6 +52,24 @@ _GAIN_HOLD_BLOCKS = 25     # minimum blocks between gain steps (~5 s at 218 ms/b
 _AVIATION_LO = 118e6
 _AVIATION_HI = 137e6
 
+# Seek scan (FM): hop size, band edges, and the "that's a station" bar.
+# Evaluated from the demodulator's own per-block metrics two blocks after
+# each hop — far more sensitive than the 1 Hz signal-bars estimate, and
+# the tuner is only ever touched between block reads (the same safe
+# interleaving the gain controller uses; hammering center_freq from HTTP
+# handlers concurrently with USB bulk reads can wedge the dongle).
+_SEEK_STEP_HZ     = 200_000      # US FM channel grid
+_SEEK_FM_LO       = 87.5e6
+_SEEK_FM_HI       = 108.0e6
+_SEEK_SETTLE_BLKS = 3            # blocks to clear the USB queue + settle per hop
+_SEEK_PILOT_MIN   = 0.025        # pilot present (clean ≈ 0.07, weak ≈ 0.03)
+_SEEK_RATIO_MAX   = 1.0          # noise/pilot ≤ 1.0 ≈ "fair" bars or better
+
+# Watchdog: if the SDR yields no IQ for this long while a session is
+# open, the device has stalled (seen after heavy retune churn) — close
+# and reopen it rather than buffering forever.
+_STALL_TIMEOUT_S = 8.0
+
 
 class RadioPipeline:
     """
@@ -110,6 +128,8 @@ class RadioPipeline:
         self._afc_hops_left = 0
         self._afc_hist: list = []
         self._afc_last_updates = -1
+        # Seek scan state — dict while scanning, None otherwise.
+        self._seek: Optional[dict] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -117,6 +137,8 @@ class RadioPipeline:
 
     async def start(self, freq_hz: float, band: str, gain="auto", deemphasis_us: int = 75, stereo_mode: str = "auto"):
         await self.stop()
+        self._seek = None
+        self._meta.seeking = False
         self._band = band
         self._freq = freq_hz
         self._gain = gain
@@ -162,6 +184,35 @@ class RadioPipeline:
         """IQ RMS below which audio is muted; 0 disables squelch."""
         self._squelch_iq = max(0.0, float(threshold))
 
+    def start_seek(self, direction: int) -> bool:
+        """Begin a seek scan (FM only).  The actual scanning runs inside
+        the SDR session loop; this just arms it.  Returns False when
+        seeking isn't possible right now."""
+        if self._band != "fm" or self._task is None or self._task.done():
+            return False
+        self._meta.update_tune(self._freq, self._band)
+        self._meta_gen = self._meta.tune_generation
+        self._meta.seeking = True
+        self._seek = {
+            "dir": 1 if direction >= 0 else -1,
+            "start": self._freq,
+            "blocks": 0,
+            "hops": 0,
+            "max_hops": int((_SEEK_FM_HI - _SEEK_FM_LO) / _SEEK_STEP_HZ) + 2,
+        }
+        logger.info("Seek %s from %.1f MHz", "up" if direction >= 0 else "down",
+                    self._freq / 1e6)
+        return True
+
+    async def stop_seek(self):
+        """Cancel a running seek and settle on the current frequency."""
+        if self._seek is None:
+            return
+        self._seek = None
+        self._meta.seeking = False
+        await self.retune(self._freq)
+        await self._meta.broadcast()
+
     async def retune(self, freq_hz: float):
         """Change frequency within the same band without restarting the SDR.
 
@@ -177,6 +228,8 @@ class RadioPipeline:
                              self._deemphasis_us, self._stereo_mode)
             return
 
+        self._seek = None
+        self._meta.seeking = False
         self._freq = freq_hz
         self._meta.update_tune(freq_hz, self._band)
         # update_tune bumped the tune generation — refresh ours, or every
@@ -289,8 +342,24 @@ class RadioPipeline:
         self._afc_last_updates = -1
 
         hold_blocks = 0   # blocks since last gain step
+        stream_iter = sdr.stream(block).__aiter__()
         try:
-            async for iq in sdr.stream(block):
+            while True:
+                # Stall watchdog: heavy retune churn has been observed to
+                # wedge the RTL2832U's USB streaming (device opens fine but
+                # yields nothing).  Reopen rather than buffer forever.
+                try:
+                    iq = await asyncio.wait_for(stream_iter.__anext__(),
+                                                timeout=_STALL_TIMEOUT_S)
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "SDR stalled — no samples for %.0f s; reopening device. "
+                        "If this repeats, power-cycle (replug) the dongle.",
+                        _STALL_TIMEOUT_S)
+                    break
+                except StopAsyncIteration:
+                    break
+
                 if not self._streams.is_active():
                     logger.info("No audio clients — closing SDR (tuner off)")
                     break
@@ -314,6 +383,9 @@ class RadioPipeline:
 
                 if self._afc_hops_left > 0 and self._demod is not None:
                     self._afc_step(sdr)
+
+                if self._seek is not None:
+                    await self._seek_step(sdr)
         finally:
             try:
                 await sdr.stop()
@@ -395,6 +467,76 @@ class RadioPipeline:
         logger.info("AFC: carrier %+.0f Hz off — recentred (%d hop(s) left)",
                     mean, self._afc_hops_left)
 
+    async def _seek_step(self, sdr):
+        """One seek-scan decision, per block (FM only).
+
+        Reads the demodulator's OWN per-block pilot/noise metrics — computed
+        on the block that was just processed at the current frequency — so
+        detection is exactly synchronised with the tuner.  The old
+        client-side seek polled the 1 Hz signal-bars estimate on a 750 ms
+        timer, a race that read the *previous* frequency's bars and flew
+        past real stations.  The tuner is only touched here, between block
+        reads, never concurrently with a USB transfer.
+        """
+        s = self._seek
+        if s is None or self._demod is None:
+            return
+
+        s["blocks"] += 1
+        if s["blocks"] < _SEEK_SETTLE_BLKS:
+            return   # let the demod + USB queue settle on the new frequency
+        s["blocks"] = 0
+
+        pilot = float(getattr(self._demod, "last_pilot_rms", 0.0))
+        noise = float(getattr(self._demod, "last_noise_rms", 0.0))
+        ratio = noise / (pilot + 1e-9)
+
+        if pilot >= _SEEK_PILOT_MIN and ratio <= _SEEK_RATIO_MAX:
+            # Listenable station — settle here with fresh decoders.
+            self._seek = None
+            self._meta.seeking = False
+            self._demod = self._make_demod("fm", self._freq, self._deemphasis_us,
+                                           self._stereo_mode)
+            self._rds = RdsDecoder(self._on_rds)
+            self._hd_detect = HdSidebandDetector()
+            self._hd_detect_countdown = 0
+            self._announce_live = True
+            logger.info("Seek stopped on %.1f MHz (pilot=%.3f ratio=%.2f)",
+                        self._freq / 1e6, pilot, ratio)
+            await self._meta.broadcast()
+            return
+
+        # No station here — hop one channel and keep sweeping.
+        s["hops"] += 1
+        f = self._freq + s["dir"] * _SEEK_STEP_HZ
+        if f > _SEEK_FM_HI + 1:
+            f = _SEEK_FM_LO
+        elif f < _SEEK_FM_LO - 1:
+            f = _SEEK_FM_HI
+        wrapped_past_start = (s["hops"] > s["max_hops"])
+        self._freq = f
+        try:
+            sdr.center_freq = f
+        except Exception as e:
+            logger.warning("Seek retune failed: %s — stopping", e)
+            self._seek = None
+            self._meta.seeking = False
+            await self._meta.broadcast()
+            return
+        # Move the dial on every client (needle sweeps); full metadata
+        # resumes when the seek settles.
+        self._meta.frequency = f
+        await self._meta.broadcast()
+        if wrapped_past_start:
+            logger.info("Seek found nothing — full sweep exhausted")
+            self._seek = None
+            self._meta.seeking = False
+            self._demod = self._make_demod("fm", self._freq, self._deemphasis_us,
+                                           self._stereo_mode)
+            self._rds = RdsDecoder(self._on_rds)
+            self._hd_detect = HdSidebandDetector()
+            await self._meta.broadcast()
+
     def _process(self, iq: np.ndarray, encoder) -> Optional[bytes]:
         """Runs in executor thread: demodulate → encode → return AAC bytes."""
         try:
@@ -408,6 +550,13 @@ class RadioPipeline:
             demod.last_iq_rms = iq_rms
 
             if self._band == "fm":
+                # Mute while the seek scan sweeps — but still run the demod
+                # so its per-block pilot/noise metrics are fresh for
+                # _seek_step's station detection.
+                if self._seek is not None:
+                    demod.process(iq)
+                    n = self._squelch_silence_n
+                    return encoder.encode(np.zeros(n, np.float32), np.zeros(n, np.float32))
                 # HD sideband sniff on the raw IQ (FM only) — every ~10 blocks
                 # (~2 s); the sidebands live at ±135-195 kHz, which the audio
                 # decimation below throws away.

@@ -70,3 +70,23 @@ async def set_squelch(req: SquelchRequest):
     slider = max(0, min(100, req.slider))
     context.radio.set_squelch(slider)
     return {"slider": slider}
+
+
+class SeekRequest(BaseModel):
+    direction: str = "up"   # "up" | "down"
+
+
+@router.post("/seek")
+async def seek(req: SeekRequest):
+    """Start a server-side seek scan (FM only).  The tuner sweeps in the
+    pipeline loop and stops on the next listenable station; clients follow
+    the needle via the /ws frequency updates and the `seeking` flag."""
+    direction = 1 if req.direction.lower() != "down" else -1
+    started = await context.radio.seek(direction)
+    return {"seeking": started}
+
+
+@router.post("/seek/stop")
+async def seek_stop():
+    await context.radio.seek_stop()
+    return {"seeking": False}

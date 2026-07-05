@@ -56,6 +56,8 @@ class MetadataState:
         self._itunes_art_applied: Optional[str] = None
         # lifecycle state pushed to the frontend for status display
         self.state: str = "idle"           # idle | tuning | buffering | live
+        # True while the pipeline's seek scan is sweeping the band
+        self.seeking: bool = False
         # Incremented on every tune.  Metadata callbacks from demod/decoder
         # threads carry the generation they were created under; anything from
         # a previous generation is stale (the old pipeline's queued callbacks
@@ -96,6 +98,7 @@ class MetadataState:
             "apple_music_url": self.apple_music_url,
             "ps_debug": self._ps_asm.debug(),
             "state": self.state,
+            "seeking": self.seeking,
         }
 
     def update_tune(self, frequency: float, band: str):

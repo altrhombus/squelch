@@ -8,6 +8,21 @@ All notable changes to Squelch are documented here. The format follows
 
 ### Fixed
 
+- **Seek scan rebuilt server-side.** The old client-driven seek polled the
+  1 Hz signal-bars estimate on a 750 ms timer — a race that read the
+  *previous* frequency's signal and flew past real stations. Seeking now
+  runs inside the pipeline loop, evaluating each channel's own per-block
+  pilot/noise metrics two-plus blocks after each hop (exactly synchronised
+  with the tuner, and the tuner is only touched between USB reads). Audio
+  is muted during the sweep and the dial needle follows on every client;
+  `POST /seek` / `POST /seek/stop` drive it, with a `seeking` flag on the
+  metadata feed.
+- **SDR stall watchdog.** Heavy retune churn (e.g. the old rapid-fire seek)
+  could wedge the RTL2832U's USB streaming — device open, zero samples,
+  audio dead until a physical replug. The session loop now times out after
+  8 s of no IQ, closes and reopens the device, and logs a clear message
+  (with a replug hint if it recurs).
+
 - **WX band now uses the correct demodulator.** NOAA weather radio is
   narrowband FM (5 kHz deviation); it was routed through the broadcast
   WFM stereo demod, producing ~15× under-deviated audio with 10 kHz of

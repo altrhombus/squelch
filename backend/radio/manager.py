@@ -127,6 +127,23 @@ class RadioManager:
             self._pipeline.set_squelch(threshold)
         logger.info("Squelch threshold: %.3f (slider=%d)", threshold, slider)
 
+    async def seek(self, direction: int) -> bool:
+        """Start a seek scan on the running FM pipeline (server-side)."""
+        async with self._tune_lock:
+            if self._pipeline and self._current_band == "fm":
+                started = self._pipeline.start_seek(direction)
+                if started:
+                    # Broadcast seeking=true right away so every client lights
+                    # up without waiting for the first hop's broadcast.
+                    await self._meta.broadcast()
+                return started
+        return False
+
+    async def seek_stop(self):
+        async with self._tune_lock:
+            if self._pipeline:
+                await self._pipeline.stop_seek()
+
     async def stop(self):
         async with self._tune_lock:
             await self._stop_all()
