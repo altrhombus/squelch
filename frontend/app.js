@@ -59,10 +59,24 @@ let _lastMeta = null, _mediaSessionReady = false;
 let _recTimer = null, _recStart = null;
 let _lastTrackChangeAt = Date.now();
 let _autoHdFreq = null;   // frequency already auto-switched to HD this visit
-let _presetMarks = [];        // frequencies of saved presets, drawn on the ruler
+let _presets = [];            // saved presets (all bands); the ruler marks the current band's
+let _tuneTarget = null;       // { band, freq, until } — local tune the server hasn't confirmed yet
+let _playingRecording = false; // the player holds a recording, not the live stream
+let _releaseTimer = null;     // drops the paused live stream so the SDR can idle
+let _hdChipsKey = "";         // last rendered HD sub-channel chip set
+let _mediaKey = "";           // last MediaSession metadata pushed
 let _scanEntry = null;        // keypad entry string while typing (scanner)
 
 const $ = (id) => document.getElementById(id);
+
+const REDUCED_MOTION = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+
+// Only touch the DOM when the text actually changes — rewriting an
+// aria-live region with the same text every WebSocket frame makes screen
+// readers re-announce it constantly.
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
 
 const player      = $("player");
 const rulerCanvas = $("ruler");
@@ -147,7 +161,8 @@ function setDisplayFreq(f, { commit = true } = {}) {
   displayFreq = clamp(f, BANDS[currentBand].min, BANDS[currentBand].max);
   readoutVal.textContent = formatFreq(displayFreq);
   readoutUnit.textContent = BANDS[currentBand].unit;
-  rulerCanvas.setAttribute("aria-valuenow", displayFreq);
+  rulerCanvas.setAttribute("aria-valuenow", snap(displayFreq));
+  rulerCanvas.setAttribute("aria-valuetext", `${formatFreq(snap(displayFreq))} ${BANDS[currentBand].unit}`);
   drawRuler();
   updateWxActive();
   if (commit) {
@@ -158,7 +173,7 @@ function setDisplayFreq(f, { commit = true } = {}) {
   }
 }
 
-async function commitTune(band = currentBand, extra = {}) {
+async function commitTune(band = currentBand, extra = {}, { startStream = true } = {}) {
   cancelSeek();
   _pendingCommit = false;
   const body = {
@@ -169,28 +184,35 @@ async function commitTune(band = currentBand, extra = {}) {
     ...extra,
   };
   localStorage.setItem(`squelch.freq.${bandMemKey(band)}`, String(body.frequency));
+  // /tune returns before the radio has moved, so WS frames still carrying
+  // the old station can arrive for a moment — hold the dial on our target
+  // until the server reports it (or the hold expires).
+  _tuneTarget = { band, freq: body.frequency, until: Date.now() + 2500 };
   // Start the stream inside a user-gesture call stack when not already
   // playing (Safari autoplay policy); when playing, the <audio> element is
   // left alone — the backend retunes without dropping the connection.
-  if (!isPlaying) _startStream();
+  // A recording in the player is replaced by the live stream.
+  if (startStream && (!isPlaying || _playingRecording)) _startStream();
   const res = await api("POST", "/tune", body);
   if (!res.error) applySquelchForBand(band);
   return res;
 }
 
-function tune(freq, band, extra = {}) {
+function tune(freq, band, extra = {}, opts = {}) {
   if (band && band !== currentBand) setBand(band, { retune: false });
   clearTimeout(_commitTimer);
   setDisplayFreq(freq, { commit: false });
-  return commitTune(band || currentBand, extra);
+  return commitTune(band || currentBand, extra, opts);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Band switching
 // ─────────────────────────────────────────────────────────────────────────────
 
-function setBand(band, { retune = true } = {}) {
-  cancelSeek();
+function setBand(band, { retune = true, fromServer = false } = {}) {
+  // Mirroring the server's band must not stop a seek another device is
+  // running — only a local band change cancels one.
+  if (!fromServer) cancelSeek();
   _scanEntry = null;
   currentBand = band;
   const b = BANDS[band];
@@ -205,7 +227,9 @@ function setBand(band, { retune = true } = {}) {
   $("wx-panel").classList.toggle("hidden", band !== "wx");
   $("scan-panel").classList.toggle("hidden", band !== "scanner");
   $("squelch-row").classList.toggle("hidden", band !== "wx" && band !== "scanner");
-  if (band !== "hd") { $("hd-channels").innerHTML = ""; $("hd-channels").classList.add("hidden"); }
+  if (band !== "hd") {
+    $("hd-channels").innerHTML = ""; $("hd-channels").classList.add("hidden"); _hdChipsKey = "";
+  }
 
   rulerCanvas.setAttribute("aria-valuemin", b.min);
   rulerCanvas.setAttribute("aria-valuemax", b.max);
@@ -279,9 +303,10 @@ function drawRuler() {
     }
   }
 
-  // Preset markers — your stations, living on the dial
+  // Preset markers — your stations, living on the dial (HD shares FM's)
   ctx.globalAlpha = 0.95; ctx.fillStyle = accent;
-  for (const pf of _presetMarks) {
+  const markBand = bandMemKey(currentBand);
+  for (const pf of _presets.filter(p => bandMemKey(p.band) === markBand).map(p => p.frequency)) {
     const x = fToX(pf);
     if (x > 4 && x < W - 4) {
       ctx.beginPath(); ctx.arc(x, H * 0.2, 2.6, 0, Math.PI * 2); ctx.fill();
@@ -355,7 +380,7 @@ function setupRuler() {
       setDisplayFreq(displayFreq - velocity * 16 / BANDS[currentBand].pxPerUnit, { commit: false });
       momentumRaf = requestAnimationFrame(decay);
     };
-    if (Math.abs(velocity) > 0.05) momentumRaf = requestAnimationFrame(decay);
+    if (Math.abs(velocity) > 0.05 && !REDUCED_MOTION?.matches) momentumRaf = requestAnimationFrame(decay);
     else { _scrubbing = false; setDisplayFreq(snap(displayFreq)); }
   };
   rulerCanvas.addEventListener("pointerup", release);
@@ -365,10 +390,12 @@ function setupRuler() {
   rulerCanvas.addEventListener("wheel", (e) => {
     if (!BANDS[currentBand].ruler) return;
     e.preventDefault();
+    cancelSeek();
+    _scrubbing = true;   // hold off WS dial mirroring mid-gesture
     const d = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY);
     setDisplayFreq(displayFreq + d / BANDS[currentBand].pxPerUnit, { commit: false });
     clearTimeout(_commitTimer);
-    _commitTimer = setTimeout(() => setDisplayFreq(snap(displayFreq)), 220);
+    _commitTimer = setTimeout(() => { _scrubbing = false; setDisplayFreq(snap(displayFreq)); }, 220);
   }, { passive: false });
 
   // Keyboard
@@ -376,20 +403,26 @@ function setupRuler() {
     const b = BANDS[currentBand];
     if (e.key === "ArrowLeft")  { e.preventDefault(); setDisplayFreq(snap(displayFreq - b.step)); }
     if (e.key === "ArrowRight") { e.preventDefault(); setDisplayFreq(snap(displayFreq + b.step)); }
+    if (e.key === "PageDown")   { e.preventDefault(); setDisplayFreq(snap(displayFreq - b.majorTick)); }
+    if (e.key === "PageUp")     { e.preventDefault(); setDisplayFreq(snap(displayFreq + b.majorTick)); }
+    if (e.key === "Home")       { e.preventDefault(); setDisplayFreq(b.min); }
+    if (e.key === "End")        { e.preventDefault(); setDisplayFreq(b.max); }
   });
 
   new ResizeObserver(drawRuler).observe(rulerCanvas);
 }
 
 function animateTo(target) {
+  if (REDUCED_MOTION?.matches) { setDisplayFreq(target); return; }
   const start = displayFreq, dist = target - start, t0 = performance.now();
   const dur = 320;
   const ease = (t) => 1 - Math.pow(1 - t, 3);
+  _scrubbing = true;   // hold off WS dial mirroring while the dial glides
   const step = (now) => {
     const t = Math.min(1, (now - t0) / dur);
     setDisplayFreq(start + dist * ease(t), { commit: false });
     if (t < 1) requestAnimationFrame(step);
-    else setDisplayFreq(target);     // final: snap + debounced commit
+    else { _scrubbing = false; setDisplayFreq(target); }   // final: snap + debounced commit
   };
   requestAnimationFrame(step);
 }
@@ -410,11 +443,11 @@ function setupStepButton(btn, dir) {
     clearTimeout(holdTimer);
     // A short press steps one channel; a long press already started a
     // server-side seek (which keeps running after release, car-radio
-    // style — tap anything to stop).
-    if (!held && !_seekActive) {
-      const b = BANDS[currentBand];
-      setDisplayFreq(snap(displayFreq + dir * b.step));
-    }
+    // style — tap anything to stop, including this button).
+    if (held) return;
+    if (_seekActive) { cancelSeek(); return; }
+    const b = BANDS[currentBand];
+    setDisplayFreq(snap(displayFreq + dir * b.step));
   };
   btn.addEventListener("pointerup", finish);
   btn.addEventListener("pointerleave", () => clearTimeout(holdTimer));
@@ -422,6 +455,7 @@ function setupStepButton(btn, dir) {
   btn.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
+      if (_seekActive) { cancelSeek(); return; }
       const b = BANDS[currentBand];
       setDisplayFreq(snap(displayFreq + dir * b.step));
     }
@@ -544,6 +578,8 @@ function applySquelchForBand(band) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function _startStream() {
+  clearTimeout(_releaseTimer);
+  _playingRecording = false;
   player.src = "/stream?" + Date.now();
   player.muted = true;
   player.play()
@@ -559,6 +595,34 @@ function _startStream() {
         $("track-title").classList.add("muted");
       }
     });
+}
+
+// Stop playback.  A paused <audio> keeps its /stream connection open,
+// which the server counts as a listener, so the SDR would never power
+// down.  Release it after a short grace so a quick pause/resume from the
+// lock screen still has a media session to resume from.
+const STREAM_RELEASE_MS = 30_000;
+
+function stopPlayback() {
+  player.pause();
+  setPlayState(false);
+  clearTimeout(_releaseTimer);
+  _releaseTimer = setTimeout(() => {
+    if (isPlaying) return;
+    player.removeAttribute("src");
+    player.load();
+    _playingRecording = false;
+  }, STREAM_RELEASE_MS);
+}
+
+function resumePlayback() {
+  // A recording resumes where it was; live radio always restarts at "now".
+  if (_playingRecording && player.getAttribute("src")) {
+    clearTimeout(_releaseTimer);
+    player.play().catch(() => {});
+  } else {
+    _startStream();
+  }
 }
 
 function setPlayState(playing) {
@@ -611,47 +675,74 @@ function applyMeta(m) {
   // The dial mirrors the ACTUAL radio — this covers loading the page
   // while another device is listening, tunes made elsewhere, and the
   // needle sweeping during a server-side seek.  It stands down only while
-  // THIS user is mid-interaction (scrubbing, an uncommitted debounce, or
-  // keypad entry).
-  if (m.frequency && m.band && BANDS[m.band]
-      && !_scrubbing && !_pendingCommit && _scanEntry === null) {
-    const f = m.band === "am" ? m.frequency / 1e3 : m.frequency / 1e6;
+  // THIS user is mid-interaction (scrubbing, an uncommitted debounce,
+  // keypad entry, or a tune the server hasn't caught up with yet).
+  const serverF = m.frequency && m.band
+    ? (m.band === "am" ? m.frequency / 1e3 : m.frequency / 1e6) : null;
+  if (_tuneTarget) {
+    const reached = serverF !== null && m.band === _tuneTarget.band
+      && Math.abs(serverF - _tuneTarget.freq) <= BANDS[m.band].step / 2;
+    if (reached || Date.now() > _tuneTarget.until) _tuneTarget = null;
+  }
+  if (serverF !== null && BANDS[m.band]
+      && !_scrubbing && !_pendingCommit && !_tuneTarget && _scanEntry === null) {
+    const f = serverF;
     if (m.band !== currentBand) {
-      setBand(m.band, { retune: false });
+      setBand(m.band, { retune: false, fromServer: true });
     }
     if (Math.abs(f - displayFreq) > BANDS[m.band].step / 2) {
       setDisplayFreq(clamp(f, BANDS[m.band].min, BANDS[m.band].max), { commit: false });
     }
   }
 
+  // While a recording plays, the now-playing area describes it, not the
+  // live radio underneath.
+  if (!_playingRecording) applyNowPlaying(m);
+
+  // Art
+  const nowHasArt = !!(m.has_art && m.art_url);
+  const artVersion = m.art_version ?? -1;
+  if (nowHasArt !== _prevHasArt || (nowHasArt && (m.art_url !== _prevArtUrl || artVersion !== _prevArtVersion))) {
+    _prevHasArt = nowHasArt; _prevArtUrl = m.art_url || ""; _prevArtVersion = artVersion;
+    updateArt(nowHasArt ? m.art_url : "/static/placeholder.svg");
+  }
+  _currentAppleMusicUrl = m.apple_music_url || null;
+  updateArtLink(m);
+
+  applyBadges(m);
+  if (m.diag) renderDiag(m.diag, m.band);
+  if (!_playingRecording) updateMediaSession(m);
+}
+
+function applyNowPlaying(m) {
   // Station name + title
   if (m.station_name) {
-    $("station-name").textContent = m.station_name;
+    setText($("station-name"), m.station_name);
     document.title = m.station_name + " — Squelch";
   } else if (m.frequency && m.band && m.state !== "idle") {
     const unit = m.band === "am" ? "kHz" : "MHz";
     const freq = m.band === "am"
       ? Math.round(m.frequency / 1e3)
       : (m.frequency / 1e6).toFixed(BANDS[m.band]?.decimals ?? 1);
-    $("station-name").textContent = `${freq} ${unit}`;
+    setText($("station-name"), `${freq} ${unit}`);
     document.title = `${freq} ${unit} — Squelch`;
   } else {
-    $("station-name").textContent = "Squelch";
+    setText($("station-name"), "Squelch");
     document.title = "Squelch";
   }
 
   // Slogan
   const slogan = $("station-slogan");
-  slogan.textContent = m.slogan || "";
+  setText(slogan, m.slogan || "");
   slogan.classList.toggle("hidden", !m.slogan);
 
   // Track info
   const trackKey = `${m.artist || ""}|${m.title || ""}`;
   const elTitle = $("track-title"), elArtist = $("track-artist");
   if (m.title) {
-    elTitle.textContent = m.title;
+    setText(elTitle, m.title);
     elTitle.classList.remove("muted");
-    elArtist.textContent = m.artist || "";
+    setText(elArtist, m.artist || "");
     elArtist.classList.toggle("hidden", !m.artist);
   } else {
     const waitedLong = Date.now() - _lastTrackChangeAt > 12_000;
@@ -664,7 +755,7 @@ function applyMeta(m) {
                    : "On air",
       error:     "Radio error — try retuning",
     }[m.state] || "";
-    elTitle.textContent = hint;
+    setText(elTitle, hint);
     elTitle.classList.add("muted");
     elArtist.classList.add("hidden");
   }
@@ -681,20 +772,12 @@ function applyMeta(m) {
       _historyRefreshTimer = setTimeout(loadHistory, 6000);
     }
   }
+}
 
-  // Art
-  const nowHasArt = !!(m.has_art && m.art_url);
-  const artVersion = m.art_version ?? -1;
-  if (nowHasArt !== _prevHasArt || (nowHasArt && (m.art_url !== _prevArtUrl || artVersion !== _prevArtVersion))) {
-    _prevHasArt = nowHasArt; _prevArtUrl = m.art_url || ""; _prevArtVersion = artVersion;
-    updateArt(nowHasArt ? m.art_url : "/static/placeholder.svg");
-  }
-  _currentAppleMusicUrl = m.apple_music_url || null;
-  updateArtLink(m);
-
+function applyBadges(m) {
   // Badges
   const pty = $("pty-badge");
-  pty.textContent = m.pty || "";
+  setText(pty, m.pty || "");
   pty.classList.toggle("hidden", !m.pty);
   $("stereo-badge").classList.toggle("hidden", !m.stereo);
 
@@ -725,7 +808,9 @@ function applyMeta(m) {
       && _autoHdFreq !== snap(displayFreq)) {
     _autoHdFreq = snap(displayFreq);
     showToast("HD detected — switching");
-    tune(displayFreq, "hd");
+    // Not a user gesture: never start audio from here (autoplay policy,
+    // and an idle open tab shouldn't suddenly play).
+    tune(displayFreq, "hd", {}, { startStream: false });
   }
 
   // Signal bars
@@ -737,7 +822,15 @@ function applyMeta(m) {
 
   // HD sub-channels
   const hdCh = $("hd-channels");
-  if (m.hd_locked && Array.isArray(m.hd_channels_available) && m.hd_channels_available.length > 1) {
+  const chipsKey = (m.hd_locked && Array.isArray(m.hd_channels_available)
+                    && m.hd_channels_available.length > 1)
+    ? `${m.hd_channels_available.join(",")}|${m.hd_channel || 1}` : "";
+  // Rebuild only when the channel set or selection changes — replacing the
+  // buttons every frame swallowed taps and destroyed keyboard focus.
+  if (chipsKey === _hdChipsKey) {
+    // unchanged
+  } else if (chipsKey) {
+    _hdChipsKey = chipsKey;
     hdCh.innerHTML = m.hd_channels_available.map(ch => {
       const active = ch === (m.hd_channel || 1);
       return `<button class="chip${active ? " active" : ""}" data-ch="${ch}" aria-pressed="${active}">HD${ch}</button>`;
@@ -746,11 +839,9 @@ function applyMeta(m) {
       btn.addEventListener("click", () => tune(displayFreq, currentBand, { hd_channel: +btn.dataset.ch })));
     hdCh.classList.remove("hidden");
   } else {
+    _hdChipsKey = "";
     hdCh.classList.add("hidden");
   }
-
-  if (m.diag) renderDiag(m.diag, m.band);
-  updateMediaSession(m);
 }
 
 $("hd-badge").addEventListener("click", () => {
@@ -849,10 +940,14 @@ function updateArtLink(m) {
     wrap.setAttribute("aria-label", "Open in Apple Music");
     wrap.setAttribute("tabindex", "0");
     wrap.onclick = () => window.open(url, "_blank", "noopener");
+    wrap.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); window.open(url, "_blank", "noopener"); }
+    };
   } else {
     wrap.classList.remove("has-link");
     wrap.removeAttribute("role"); wrap.removeAttribute("aria-label"); wrap.removeAttribute("tabindex");
     wrap.onclick = null;
+    wrap.onkeydown = null;
   }
 }
 
@@ -1008,9 +1103,9 @@ document.querySelectorAll("#autohd-seg .seg-btn").forEach(b =>
 function setupMediaSession() {
   if (!("mediaSession" in navigator) || _mediaSessionReady) return;
   _mediaSessionReady = true;
-  navigator.mediaSession.setActionHandler("play", () => _startStream());
-  navigator.mediaSession.setActionHandler("pause", () => { player.pause(); setPlayState(false); });
-  navigator.mediaSession.setActionHandler("stop",  () => { player.pause(); setPlayState(false); });
+  navigator.mediaSession.setActionHandler("play", () => resumePlayback());
+  navigator.mediaSession.setActionHandler("pause", () => stopPlayback());
+  navigator.mediaSession.setActionHandler("stop",  () => stopPlayback());
   navigator.mediaSession.setActionHandler("previoustrack", () =>
     setDisplayFreq(snap(displayFreq - BANDS[currentBand].step)));
   navigator.mediaSession.setActionHandler("nexttrack", () =>
@@ -1021,18 +1116,26 @@ function setupMediaSession() {
 function updateMediaSession(m) {
   if (!("mediaSession" in navigator)) return;
   if (m !== null) {
-    const artSrc = (m?.has_art && m?.art_url)
-      ? location.origin + m.art_url + "?t=" + (m.art_version || 0)
-      : location.origin + "/static/placeholder.svg";
-    navigator.mediaSession.metadata = new MediaMetadata({
+    const hasArt = !!(m?.has_art && m?.art_url);
+    const fields = {
       title:  m?.title || `${formatFreq(displayFreq)} ${BANDS[currentBand].unit}`,
       artist: m?.artist || m?.station_name || "",
       album:  m?.station_name || m?.slogan || "Squelch",
-      artwork: [
-        { src: artSrc, sizes: "512x512", type: "image/jpeg" },
-        { src: artSrc, sizes: "256x256", type: "image/jpeg" },
-      ],
-    });
+      art:    hasArt ? location.origin + m.art_url + "?t=" + (m.art_version || 0)
+                     : location.origin + "/static/placeholder.svg",
+    };
+    // Replacing MediaMetadata every frame flickers the lock screen and
+    // refetches the artwork — only push real changes.
+    const key = JSON.stringify(fields);
+    if (key !== _mediaKey) {
+      _mediaKey = key;
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: fields.title, artist: fields.artist, album: fields.album,
+        artwork: [hasArt
+          ? { src: fields.art, sizes: "600x600", type: "image/jpeg" }
+          : { src: fields.art, sizes: "any", type: "image/svg+xml" }],
+      });
+    }
   }
   navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
 }
@@ -1076,16 +1179,13 @@ async function loadPresets() {
   const presets = await api("GET", "/presets");
   const list = $("presets-list");
   list.innerHTML = "";
-  _presetMarks = [];
-  if (!Array.isArray(presets) || !presets.length) {
+  _presets = Array.isArray(presets) ? presets : [];
+  if (!_presets.length) {
     list.innerHTML = '<p class="empty-hint">No presets yet — tune a station and save it.</p>';
     drawRuler();
     return;
   }
-  for (const p of presets) {
-    if (p.band === currentBand || (currentBand === "hd" && p.band === "fm")) {
-      _presetMarks.push(p.frequency);
-    }
+  for (const p of _presets) {
     const unit = BANDS[p.band]?.unit || "MHz";
     const item = document.createElement("div");
     item.className = "lib-item";
@@ -1121,9 +1221,10 @@ async function loadHistory() {
     return;
   }
   for (const h of items) {
+    // Band precision: WX channels are 25 kHz apart (162.525 vs 162.550)
     const freq = h.band === "am"
       ? `${Math.round(h.frequency / 1e3)} kHz`
-      : `${(h.frequency / 1e6).toFixed(1)} MHz`;
+      : `${(h.frequency / 1e6).toFixed(BANDS[h.band]?.decimals ?? 1)} MHz`;
     const musicUrl = (h.artist && h.title)
       ? `https://music.apple.com/search?term=${encodeURIComponent(h.artist + " " + h.title)}`
       : null;
@@ -1243,12 +1344,18 @@ async function loadRecordings() {
 }
 
 function playRecording(id, label) {
+  clearTimeout(_releaseTimer);
+  _playingRecording = true;
   player.src = `/recordings/${id}/download`;
   player.play().then(() => setPlayState(true)).catch(() => {});
   $("station-name").textContent = label || "Recording";
   $("track-title").textContent = "Playing recording";
   $("track-title").classList.remove("muted");
   $("track-artist").classList.add("hidden");
+  if ("mediaSession" in navigator) {
+    _mediaKey = "";
+    navigator.mediaSession.metadata = new MediaMetadata({ title: label || "Recording", album: "Squelch" });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1280,15 +1387,17 @@ async function syncRecordingState() {
 
 $("btn-record").addEventListener("click", async () => {
   if (isRecording) {
-    await api("POST", "/record/stop");
+    const res = await api("POST", "/record/stop");
     setRecordingUi(false);
     loadRecordings();
-    showToast("Recording saved");
+    showToast(res.error ? "Recording wasn't running" : "Recording saved");
   } else {
     const res = await api("POST", "/record/start");
     if (!res.error) {
       setRecordingUi(true, res.started_at);
       showToast("Recording started");
+    } else {
+      showToast("Couldn't start recording");
     }
   }
 });
@@ -1385,8 +1494,10 @@ document.addEventListener("keydown", (e) => {
     setDisplayFreq(snap(displayFreq + dir * BANDS[currentBand].step));  // debounced commit
   }
   if (e.key === " ") {
+    // Space on a focused control activates that control, not play/stop too
+    if (document.activeElement?.closest?.('button, a, select, [role="button"], [role="tab"], [role="radio"], [role="link"]')) return;
     e.preventDefault();
-    if (isPlaying) { player.pause(); setPlayState(false); } else { _startStream(); }
+    if (isPlaying) stopPlayback(); else resumePlayback();
   }
   if (e.key === "r" || e.key === "R") { e.preventDefault(); $("btn-record").click(); }
 });
@@ -1402,12 +1513,12 @@ document.querySelectorAll("#lib-tabs .seg-btn").forEach(tab =>
   tab.addEventListener("click", () => switchLibTab(tab.dataset.lib)));
 
 $("btn-play").addEventListener("click", () => {
-  if (isPlaying) { player.pause(); setPlayState(false); } else { _startStream(); }
+  if (isPlaying) stopPlayback(); else resumePlayback();
 });
 player.addEventListener("play",    () => setPlayState(true));
 player.addEventListener("playing", () => setPlayState(true));
 player.addEventListener("pause",   () => setPlayState(false));
-player.addEventListener("ended",   () => setPlayState(false));
+player.addEventListener("ended",   () => { _playingRecording = false; setPlayState(false); });
 player.addEventListener("error",   () => setPlayState(false));
 
 $("volume").addEventListener("input", () => { player.volume = parseFloat($("volume").value); });

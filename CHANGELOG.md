@@ -8,6 +8,44 @@ All notable changes to Squelch are documented here. The format follows
 
 ### Fixed
 
+- **Opening the app on a second device cancelled a seek.** Mirroring the
+  server's band ran the local band-change path, which POSTed `/seek/stop`.
+- **Dial snapped back after tuning.** `/tune` returns before the radio has
+  moved, so frames still carrying the old station pulled the dial (and
+  band tab) back. The dial now holds a local tune until the server reports
+  it (2.5 s cap), and wheel scrolls and tap-to-jump glides count as
+  interaction too.
+- **Paused player kept the SDR running.** A paused `<audio>` holds its
+  `/stream` connection, which the server counts as a listener. Stopping
+  now releases the stream after 30 s (a quick lock-screen pause/resume
+  still works).
+- **Playing a recording hijacked live tuning.** Tapping a preset retuned
+  the radio but kept playing the recording, and lock-screen play resumed
+  live audio instead of the recording. Now a tune switches to the live
+  stream, the recording's title isn't overwritten by live metadata, and
+  play resumes whichever source was playing.
+- **Space fired twice.** On a focused button, Space activated the button
+  *and* toggled play/stop.
+- **Auto-HD could start audio by itself** from a WebSocket frame (outside
+  any user gesture) — it now only retunes.
+- **HD sub-channel chips were rebuilt every frame**, eating taps and
+  keyboard focus; preset marks on the dial went stale after a band change;
+  tapping a chevron didn't stop a running seek; history showed WX channels
+  at one decimal (162.525 and 162.550 both as "162.5"); "Recording saved"
+  showed even when nothing was recording.
+- **Recordings served as `audio/mp4`.** They are raw ADTS; now
+  `audio/aac`, which Safari needs to play them.
+
+### Accessibility
+
+- Station name and track info (aria-live regions) are only rewritten when
+  their text changes, so screen readers stop re-announcing every frame.
+- The frequency dial reports `aria-valuetext` ("91.1 MHz") and supports
+  PageUp/PageDown/Home/End; the album-art link activates with Enter.
+- JS dial animation and momentum respect `prefers-reduced-motion`.
+- MediaSession metadata is only replaced on change (no lock-screen
+  flicker), with correct artwork types.
+- Web manifest declares `id` and `scope`.
 - **XSS via off-air text.** `esc()` in the web app escaped `& < >` but not
   quotes, while station names and titles (RDS PS/RadioText, HD metadata)
   were interpolated into quoted `aria-label` attributes. A crafted

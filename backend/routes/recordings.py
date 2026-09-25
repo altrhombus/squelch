@@ -58,7 +58,9 @@ async def download_recording(recording_id: int):
     path = os.path.join(output_dir, rec["filename"])
     if not os.path.exists(path):
         raise HTTPException(404, "File not found on disk")
-    return FileResponse(path, media_type="audio/mp4", filename=rec["filename"])
+    # Recordings are the raw ADTS stream, not an MP4 container — Safari
+    # refuses to play them when mislabelled audio/mp4.
+    return FileResponse(path, media_type="audio/aac", filename=rec["filename"])
 
 
 # ---------------------------------------------------------------------------
