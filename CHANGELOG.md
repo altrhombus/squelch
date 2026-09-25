@@ -178,6 +178,10 @@ All notable changes to Squelch are documented here. The format follows
 
 ### Added
 
+- **Headless-browser UI smoke tests** (`tests/ui/`, Playwright + Chromium)
+  covering the live-radio frontend: server-state mirroring, tune holds,
+  seek sync, HD chips, aria-live churn, auto-HD, stream release. Run in
+  their own CI job; skipped locally unless the `ui` extra is installed.
 - **Complete UI redesign in the macOS 27 "Golden Gate" design language.**
   One continuous radio surface replaces the three-panel dashboard: a
   scrub-able glass frequency ruler (momentum + channel snapping, preset
