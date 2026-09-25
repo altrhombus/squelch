@@ -151,3 +151,44 @@ async def test_schedule_crud_round_trip(recorder, tmp_db):
         assert await recorder.delete_scheduled_recording(sched["id"]) is False
     finally:
         await recorder.shutdown()
+
+
+async def test_failed_open_leaves_no_listener(recorder, tmp_db, tmp_path):
+    await tmp_db.init_db()
+    registered = []
+    recorder._streams.new_client = lambda: registered.append(1) or asyncio.Queue()
+    recorder._output_dir = str(tmp_path / "missing" / "dir")
+    result = await recorder.start("x.aac")
+    assert "error" in result
+    assert registered == []            # no phantom client keeping the SDR up
+    assert (await recorder.stop()) == {"error": "not recording"}
+
+
+async def test_explicit_filename_never_overwrites(recorder, tmp_db, tmp_path):
+    await tmp_db.init_db()
+    (tmp_path / "keep.aac").write_bytes(b"precious")
+    result = await recorder.start("keep.aac")
+    assert result == {"error": "file exists"}
+    assert (tmp_path / "keep.aac").read_bytes() == b"precious"
+
+
+async def test_scheduled_run_leaves_manual_recording_started_mid_settle(
+        recorder, tmp_db, monkeypatch):
+    await tmp_db.init_db()
+    radio = FakeRadio()
+    recorder.set_radio(radio)
+    real_sleep = asyncio.sleep
+
+    async def sleep_then_user_records(t):
+        # The user hits record during the 2 s settle window.
+        if t == 2 and not recorder.is_recording():
+            await recorder.start("manual.aac")
+        await real_sleep(0)
+
+    monkeypatch.setattr("backend.recorder.asyncio.sleep", sleep_then_user_records)
+    await recorder._run_scheduled(
+        {"name": "Clash", "frequency": 91.1, "band": "fm", "duration_seconds": 0}
+    )
+    assert recorder.is_recording()
+    assert os.path.basename(recorder._recording_file) == "manual.aac"
+    await recorder.stop()

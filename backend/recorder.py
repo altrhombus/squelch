@@ -25,6 +25,21 @@ def _safe_name(s: str) -> str:
     return re.sub(r"[^\w\-]", "_", s)[:40]
 
 
+def _open_exclusive(path: str, auto: bool):
+    """Open a new recording file without clobbering an existing one.  Auto
+    names (minute resolution) get a numeric suffix on collision; an explicit
+    user-chosen name raises FileExistsError."""
+    base, ext = os.path.splitext(path)
+    for n in range(1, 100):
+        candidate = path if n == 1 else f"{base}-{n}{ext}"
+        try:
+            return open(candidate, "xb")
+        except FileExistsError:
+            if not auto:
+                raise
+    raise FileExistsError(path)
+
+
 def _auto_filename(meta: MetadataState, output_dir: str) -> str:
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
     parts = [ts]
@@ -88,23 +103,42 @@ class Recorder:
             out_file = os.path.join(os.path.expanduser(self._output_dir), safe)
         else:
             out_file = _auto_filename(self._meta, self._output_dir)
-        self._recording_file = out_file
-        self._rec_start      = datetime.now(timezone.utc)
-        self._rec_queue      = self._streams.new_client()
-        self._rec_file       = open(out_file, "wb")
+        # Open the file before registering as a stream client: a failed open
+        # must not leave a listener behind that keeps the SDR awake.  "x"
+        # refuses to overwrite — two DB rows sharing one file would delete
+        # each other's audio.
+        try:
+            rec_file = _open_exclusive(out_file, auto=not filename)
+        except FileExistsError:
+            return {"error": "file exists"}
+        except OSError as e:
+            logger.warning("Cannot open recording file %s: %s", out_file, e)
+            return {"error": f"cannot open file: {e.strerror or e}"}
+        out_file = rec_file.name
+        rec_start = datetime.now(timezone.utc)
 
-        db = await get_db()
-        cur = await db.execute(
-            """INSERT INTO recordings
-                   (filename, station_name, artist, title, frequency, band, started_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (os.path.basename(out_file), self._meta.station_name,
-             self._meta.artist, self._meta.title,
-             self._meta.frequency, self._meta.band,
-             self._rec_start.isoformat()),
-        )
-        await db.commit()
-        self._rec_id = cur.lastrowid
+        try:
+            db = await get_db()
+            cur = await db.execute(
+                """INSERT INTO recordings
+                       (filename, station_name, artist, title, frequency, band, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (os.path.basename(out_file), self._meta.station_name,
+                 self._meta.artist, self._meta.title,
+                 self._meta.frequency, self._meta.band,
+                 rec_start.isoformat()),
+            )
+            await db.commit()
+        except Exception:
+            rec_file.close()
+            os.remove(out_file)
+            raise
+
+        self._recording_file = out_file
+        self._rec_start      = rec_start
+        self._rec_file       = rec_file
+        self._rec_id         = cur.lastrowid
+        self._rec_queue      = self._streams.new_client()
 
         self._rec_task = asyncio.create_task(self._write_loop())
         logger.info("Recording to: %s", out_file)
@@ -179,6 +213,11 @@ class Recorder:
             raise
         except Exception as e:
             logger.warning("Recording write error: %s", e)
+            # Stop counting as a listener so the SDR can idle; stop() still
+            # finalises the file and DB row.
+            if self._streams and self._rec_queue:
+                self._streams.remove_client(self._rec_queue)
+            self._rec_queue = None
 
     # ------------------------------------------------------------------
     # Recordings list
@@ -245,11 +284,24 @@ class Recorder:
         await asyncio.sleep(2)   # let the gain controller settle before capture
 
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        await self.start(f"{ts}_{_safe_name(sched['name'])}.aac")
+        result = await self.start(f"{ts}_{_safe_name(sched['name'])}.aac")
+        if "error" in result:
+            # e.g. a manual recording began during the settle window — leave
+            # it (and the tuner) alone rather than stopping someone else's.
+            logger.warning("Scheduled recording %r not started: %s",
+                           sched["name"], result["error"])
+            return
+        rec_id = self._rec_id
         try:
             await asyncio.sleep(sched["duration_seconds"])
         finally:
-            await self.stop()
+            # Only end our own recording: the user may have stopped it and
+            # started another in the meantime.
+            ours = self._rec_id == rec_id
+            if ours:
+                await self.stop()
+        if not ours:
+            return   # someone else's recording is running on this station
 
         if prev["frequency"] and (prev["frequency"], prev["band"]) != (freq_hz, band):
             await self._radio.tune(prev["frequency"], prev["band"])

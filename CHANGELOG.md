@@ -27,6 +27,39 @@ All notable changes to Squelch are documented here. The format follows
   now inspects the library's exports. The nrsc5 step no longer reinstalls
   apt's `librtlsdr-dev` beside the fork, and the fork's udev rules are
   installed so the service user can open the dongle.
+- **One sleeping client stalled metadata for everyone.** WebSocket sends
+  were awaited serially with no timeout, and every RDS change spawned an
+  untracked broadcast task, so a phone with a full TCP buffer blocked all
+  updates while tasks piled up. Sends now run concurrently with a 2 s
+  deadline (stuck clients are closed and reconnect), and fire-and-forget
+  broadcasts coalesce into a single in-flight task.
+- **Encoder closed mid-encode on retune.** Cancelling the pipeline closed
+  the PyAV encoder on the event loop while the DSP thread could still be
+  encoding with it. The close now runs on the DSP thread, behind any
+  in-flight block.
+- **Old station's RDS credited to the new one.** Queued RDS blocks read
+  the *current* decoder and generation when they ran, so groups captured
+  before a retune fed the new station's decoder. Each block and callback
+  is now bound to the decoder that produced it, and a busy RDS thread
+  drops blocks instead of queueing them without bound.
+- **SDR setup failure was a permanent outage.** A failure configuring the
+  tuner after open left the USB interface claimed and ended the pipeline
+  in "error". Setup is now inside the cleanup path, and sessions retry
+  with backoff (1–30 s). `sdr.device_index` is now honoured for analog
+  bands (it only reached nrsc5 before).
+- **Retune wrote the tuner from the HTTP handler**, concurrently with USB
+  bulk reads. It now hands the frequency to the session loop, which
+  applies it between reads like gain, AFC and seek already do.
+- **`systemctl stop` hung with a listener connected.** `/stream` never ends
+  on its own and uvicorn waited on it indefinitely, so systemd SIGKILLed
+  the process and shutdown cleanup (recording finalisation, DB close)
+  never ran. Graceful shutdown is now bounded to 5 s, each cleanup step
+  runs even if an earlier one fails, and the unit sets `TimeoutStopSec`.
+- **Recorder edge cases.** A failed file open left a phantom listener that
+  kept the SDR awake; a scheduled recording could stop a manual one the
+  user started during its settle window; an explicit filename could
+  overwrite an existing recording.
+
 - **Seek scan rebuilt server-side.** The old client-driven seek polled the
   1 Hz signal-bars estimate on a 750 ms timer — a race that read the
   *previous* frequency's signal and flew past real stations. Seeking now
@@ -70,6 +103,8 @@ All notable changes to Squelch are documented here. The format follows
 
 ### Changed
 
+- systemd unit: `SupplementaryGroups=plugdev`, `NoNewPrivileges`,
+  `PrivateTmp`, `ProtectSystem=full`.
 - **RDS weak-signal sensitivity substantially improved**: burst error
   correction (≤2-bit bursts via the (26,16) code's syndrome table, gated
   to expected block offsets while synced), position-tracked block sync

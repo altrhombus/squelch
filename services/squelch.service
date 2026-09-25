@@ -18,6 +18,18 @@ StandardError=journal
 # Give the SDR USB device access
 # If you get permission errors on /dev/bus/usb, run: sudo usermod -aG plugdev pi
 Environment=PYTHONUNBUFFERED=1
+SupplementaryGroups=plugdev
+
+# Uvicorn bounds its own graceful shutdown to 5 s; leave room for cleanup
+# (recording finalisation, SDR close) before systemd escalates to SIGKILL.
+TimeoutStopSec=15
+
+# Hardening — conservative settings that leave the repo, ~/recordings and
+# USB access writable/usable. PrivateTmp also keeps the /tmp/sdr-art album
+# art directory private to the service.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target

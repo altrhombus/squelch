@@ -78,12 +78,22 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # Each step runs even if an earlier one fails — the recorder must still
+    # finalise its DB row and the DB must still close if, say, the radio
+    # raises while stopping.  The recorder goes before the radio so the
+    # recording's end time is written while the stream is still coherent.
+    async def _step(name, coro_fn):
+        try:
+            await coro_fn()
+        except Exception:
+            logger.exception("Shutdown step %s failed", name)
+
     if context.icecast:
-        await context.icecast.stop()
+        await _step("icecast", context.icecast.stop)
         context.icecast = None
-    await context.radio.stop()
-    await context.recorder.shutdown()
-    await close_db()
+    await _step("recorder", context.recorder.shutdown)
+    await _step("radio", context.radio.stop)
+    await _step("db", close_db)
 
 
 app = FastAPI(title="Squelch", lifespan=lifespan)
@@ -120,5 +130,10 @@ app.include_router(history.router)
 if __name__ == "__main__":
     import uvicorn
     srv = _load_config().get("server", {})
+    # /stream responses never end on their own, and uvicorn waits for open
+    # requests before running lifespan shutdown — without a bound, stopping
+    # the service with a listener connected hangs until systemd SIGKILLs it
+    # and the shutdown cleanup never runs.
     uvicorn.run("backend.main:app", host=srv.get("host", "0.0.0.0"),
-                port=srv.get("port", 8000), reload=False)
+                port=srv.get("port", 8000), reload=False,
+                timeout_graceful_shutdown=5)
