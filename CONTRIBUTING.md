@@ -25,6 +25,21 @@ node --check frontend/app.js             # frontend syntax
 
 CI runs the same three commands on every PR. Please make sure they pass locally first.
 
+Frontend changes are also covered by headless-browser smoke tests in
+`tests/ui/` (skipped unless Playwright is installed; CI runs them in a
+separate job):
+
+```bash
+.venv/bin/pip install -e ".[ui]"
+.venv/bin/python -m playwright install chromium
+.venv/bin/pytest -q tests/ui
+```
+
+They drive the real page against the app running in-process, intercept the
+control endpoints, and inject WebSocket frames via `applyMeta()` — no SDR or
+audio needed. If you already have a different Chromium build, point
+`SQUELCH_UI_CHROMIUM` at its executable instead of installing one.
+
 ### What the tests cover
 
 - `tests/test_dsp.py` — synthesizes a textbook FM stereo multiplex (pilot, DSB-SC subcarrier) and runs it through the full demodulator; asserts tone recovery, channel separation, and mono fallback. If you touch `backend/sdr/fm.py`, these tests are your safety net.

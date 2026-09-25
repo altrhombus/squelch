@@ -33,3 +33,24 @@ jobs:
 
       - name: Frontend syntax check
         run: node --check frontend/app.js
+
+  ui-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # Headless Chromium drives the real page against the app running
+      # in-process; control endpoints are intercepted and WebSocket frames
+      # injected, so no SDR hardware is needed here either.
+      - name: Install
+        run: |
+          pip install -e ".[dev,ui]"
+          python -m playwright install --with-deps chromium
+
+      - name: UI smoke tests
+        run: pytest -q tests/ui

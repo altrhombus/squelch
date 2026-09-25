@@ -111,3 +111,25 @@ def test_websocket_sends_initial_metadata(client):
         msg = ws.receive_json()
         assert msg["state"] == "idle"
         assert "frequency" in msg
+
+
+def test_recording_download_is_served_as_adts_aac(client, tmp_path):
+    from backend.db import get_db
+
+    rec_dir = tmp_path / "recordings"
+    rec_dir.mkdir(exist_ok=True)
+    (rec_dir / "clip.aac").write_bytes(b"\xff\xf1fake-adts")
+
+    async def insert():
+        db = await get_db()
+        cur = await db.execute(
+            "INSERT INTO recordings (filename, started_at) VALUES (?, ?)",
+            ("clip.aac", "2026-01-01T00:00:00+00:00"))
+        await db.commit()
+        return cur.lastrowid
+
+    # The DB connection lives on the app's event loop — insert through it.
+    rid = client.portal.call(insert)
+    r = client.get(f"/recordings/{rid}/download")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "audio/aac"
