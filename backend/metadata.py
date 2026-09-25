@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 ART_DIR = "/tmp/sdr-art"
 ART_PATH = os.path.join(ART_DIR, "current.jpg")
 
+# Per-client WebSocket send deadline.
+_WS_SEND_TIMEOUT_S = 2.0
+
 
 class MetadataState:
     def __init__(self, config: Optional[dict] = None):
@@ -74,6 +77,9 @@ class MetadataState:
         self._track_confident: bool = False
         self._ps_asm = DynamicPsAssembler()
         self._websockets: set[WebSocket] = set()
+        self._bcast_task: Optional[asyncio.Future] = None
+        self._bcast_dirty = False
+        self._bg_tasks: set = set()
 
     def to_dict(self) -> dict:
         return {
@@ -226,7 +232,7 @@ class MetadataState:
             self.pi_code = pi
             changed = True
         if changed:
-            asyncio.ensure_future(self.broadcast())
+            self.schedule_broadcast()
             self._debounce_history_save()
 
     def update_nrsc5(
@@ -279,7 +285,7 @@ class MetadataState:
             except OSError as e:
                 logger.warning("Failed to copy cover art: %s", e)
         if changed:
-            asyncio.ensure_future(self.broadcast())
+            self.schedule_broadcast()
             self._debounce_history_save()
 
     def update_signal(self, bars: int, stereo: bool = None):
@@ -314,27 +320,57 @@ class MetadataState:
         if not self._websockets:
             return
         import json
-        msg = json.dumps(self.to_dict())
-        dead = set()
-        for ws in list(self._websockets):
-            try:
-                await ws.send_text(msg)
-            except Exception:
-                dead.add(ws)
-        self._websockets -= dead
+        await self._send_all(json.dumps(self.to_dict()))
 
     async def broadcast_event(self, event: str):
         if not self._websockets:
             return
         import json
-        msg = json.dumps({"event": event})
-        dead = set()
-        for ws in list(self._websockets):
+        await self._send_all(json.dumps({"event": event}))
+
+    def schedule_broadcast(self):
+        """Fire-and-forget broadcast for sync callers.  Coalesces: while one
+        is in flight, further requests just mark it dirty, so a burst of RDS
+        updates can never pile up an unbounded queue of broadcast tasks."""
+        if self._bcast_task is not None and not self._bcast_task.done():
+            self._bcast_dirty = True
+            return
+        self._bcast_task = asyncio.ensure_future(self._broadcast_coalesced())
+
+    async def _broadcast_coalesced(self):
+        while True:
+            self._bcast_dirty = False
+            await self.broadcast()
+            if not self._bcast_dirty:
+                return
+
+    async def _send_all(self, msg: str):
+        """Send to every client concurrently, each bounded by a timeout.  A
+        client that can't take the frame in time (e.g. a phone asleep with a
+        full TCP buffer) is dropped and closed — its page reconnects and gets
+        a fresh snapshot — instead of stalling updates for everyone else."""
+        async def send(ws):
             try:
-                await ws.send_text(msg)
+                await asyncio.wait_for(ws.send_text(msg), _WS_SEND_TIMEOUT_S)
+                return None
             except Exception:
-                dead.add(ws)
-        self._websockets -= dead
+                return ws
+
+        socks = list(self._websockets)
+        dead = [ws for ws in await asyncio.gather(*(send(ws) for ws in socks))
+                if ws is not None]
+        for ws in dead:
+            self._websockets.discard(ws)
+            task = asyncio.ensure_future(self._close_ws(ws))
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
+
+    @staticmethod
+    async def _close_ws(ws):
+        try:
+            await asyncio.wait_for(ws.close(code=1011), _WS_SEND_TIMEOUT_S)
+        except Exception:
+            pass
 
     def _debounce_history_save(self):
         """Cancel any pending save and restart the 4-second stability window.

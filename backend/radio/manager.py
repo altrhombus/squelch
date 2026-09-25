@@ -186,7 +186,7 @@ class RadioManager:
             if not _live[0]:
                 _live[0] = True
                 self._meta.update_state("live")
-                asyncio.ensure_future(self._meta.broadcast())
+                self._meta.schedule_broadcast()
 
             l_in = np.asarray(pcm_l, np.float32)
             r_in = np.asarray(pcm_r, np.float32)
