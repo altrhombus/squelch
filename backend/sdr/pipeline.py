@@ -61,6 +61,10 @@ _AVIATION_HI = 137e6
 _SEEK_STEP_HZ     = 200_000      # US FM channel grid
 _SEEK_FM_LO       = 87.5e6
 _SEEK_FM_HI       = 108.0e6
+# Channels on the seek grid (87.5, 87.7 … 107.9).  Wrapping by a whole
+# number of channels keeps the sweep on the same grid — wrapping straight
+# to a band edge would shift every later hop 100 kHz off the station centres.
+_SEEK_FM_CHANNELS = int((_SEEK_FM_HI - _SEEK_FM_LO) // _SEEK_STEP_HZ) + 1
 _SEEK_SETTLE_BLKS = 3            # blocks to clear the USB queue + settle per hop
 _SEEK_PILOT_MIN   = 0.025        # pilot present (clean ≈ 0.07, weak ≈ 0.03)
 _SEEK_RATIO_MAX   = 1.0          # noise/pilot ≤ 1.0 ≈ "fair" bars or better
@@ -510,9 +514,9 @@ class RadioPipeline:
         s["hops"] += 1
         f = self._freq + s["dir"] * _SEEK_STEP_HZ
         if f > _SEEK_FM_HI + 1:
-            f = _SEEK_FM_LO
+            f -= _SEEK_FM_CHANNELS * _SEEK_STEP_HZ
         elif f < _SEEK_FM_LO - 1:
-            f = _SEEK_FM_HI
+            f += _SEEK_FM_CHANNELS * _SEEK_STEP_HZ
         wrapped_past_start = (s["hops"] > s["max_hops"])
         self._freq = f
         try:

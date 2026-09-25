@@ -22,17 +22,28 @@ sudo apt-get install -y \
 
 # Build librtlsdr from the RTL-SDR Blog fork — the Raspbian apt package is
 # missing rtlsdr_set_dithering and other symbols required by pyrtlsdr 0.3+.
-if ldconfig -p | grep -q librtlsdr && rtl_test -t 2>/dev/null | grep -q "rtlsdr_set_dithering"; then
+# Detect the fork by inspecting the library's exported symbols directly.
+have_rtlsdr_fork() {
+  local lib
+  for lib in $(ldconfig -p | awk '/librtlsdr\.so/ {print $NF}'); do
+    nm -D "$lib" 2>/dev/null | grep -qw rtlsdr_set_dithering && return 0
+  done
+  return 1
+}
+if have_rtlsdr_fork; then
   echo "    librtlsdr (RTL-SDR Blog fork) already installed"
 else
   echo "==> Building librtlsdr from RTL-SDR Blog fork"
   sudo apt-get remove -y rtl-sdr librtlsdr-dev librtlsdr0 2>/dev/null || true
   RTL_TMP=$(mktemp -d)
   git clone --depth 1 https://github.com/rtlsdrblog/rtl-sdr-blog "$RTL_TMP/rtl-sdr-blog"
-  cmake -S "$RTL_TMP/rtl-sdr-blog" -B "$RTL_TMP/rtl-sdr-blog/build" -DDETACH_KERNEL_DRIVER=ON
+  cmake -S "$RTL_TMP/rtl-sdr-blog" -B "$RTL_TMP/rtl-sdr-blog/build" -DDETACH_KERNEL_DRIVER=ON -DINSTALL_UDEV_RULES=ON
   make -C "$RTL_TMP/rtl-sdr-blog/build" -j"$(nproc)"
   sudo make -C "$RTL_TMP/rtl-sdr-blog/build" install
   sudo ldconfig
+  # The apt package that shipped the plugdev udev rules was just removed;
+  # the fork's rules replace them.
+  sudo udevadm control --reload-rules && sudo udevadm trigger || true
   rm -rf "$RTL_TMP"
   echo "    librtlsdr installed"
 fi
@@ -42,7 +53,9 @@ if command -v nrsc5 &>/dev/null; then
   echo "    nrsc5 already installed — skipping build"
 else
   echo "==> Building nrsc5 (HD Radio decoder) from source"
-  sudo apt-get install -y cmake libfftw3-dev librtlsdr-dev build-essential
+  # No librtlsdr-dev here: it would pull apt's librtlsdr0 back in beside the
+  # fork. nrsc5 builds against the fork's headers in /usr/local.
+  sudo apt-get install -y cmake libfftw3-dev pkg-config build-essential
   NRSC5_TMP=$(mktemp -d)
   git clone --depth 1 https://github.com/theori-io/nrsc5 "$NRSC5_TMP/nrsc5"
   cmake -S "$NRSC5_TMP/nrsc5" -B "$NRSC5_TMP/nrsc5/build" -DUSE_RTLSDR=ON

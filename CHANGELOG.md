@@ -8,6 +8,25 @@ All notable changes to Squelch are documented here. The format follows
 
 ### Fixed
 
+- **XSS via off-air text.** `esc()` in the web app escaped `& < >` but not
+  quotes, while station names and titles (RDS PS/RadioText, HD metadata)
+  were interpolated into quoted `aria-label` attributes. A crafted
+  RadioText could break out of the attribute and run script. Quotes are
+  now escaped too.
+- **pyfftw was never used.** `scipy.fft.set_backend` is a context manager;
+  the bare call left pocketfft in charge while logging "FFTW backend
+  active". Now `set_global_backend`.
+- **Station name flicker after a PS paging burst.** Stale change times
+  re-tripped the "dynamic PS" regime on every reception once it cleared,
+  alternately blanking and restoring the name.
+- **Seek-down wrap landed off the channel grid.** Wrapping from 87.5 to
+  108.0 put every later hop on even tenths, 100 kHz off US stations.
+  Wraps now move by whole channels (87.5 ↓ 107.9).
+- **Install script always rebuilt librtlsdr.** Its "already installed"
+  check grepped `rtl_test` output for a symbol name it never prints; it
+  now inspects the library's exports. The nrsc5 step no longer reinstalls
+  apt's `librtlsdr-dev` beside the fork, and the fork's udev rules are
+  installed so the service user can open the dongle.
 - **Seek scan rebuilt server-side.** The old client-driven seek polled the
   1 Hz signal-bars estimate on a 750 ms timer — a race that read the
   *previous* frequency's signal and flew past real stations. Seeking now

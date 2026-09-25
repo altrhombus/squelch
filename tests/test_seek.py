@@ -112,8 +112,34 @@ def test_seek_down_wraps_at_band_edge():
         p.start_seek(-1)
         sdr = _FakeSdr(p._freq)
         _drive(p, sdr, _SEEK_SETTLE_BLKS + 1)
-        # stepping below the bottom wraps to the top of the band
-        assert abs(sdr.center_freq - _SEEK_FM_HI) < 1
+        # stepping below the bottom wraps to the top channel on the same
+        # odd-tenth grid (107.9), not the 108.0 band edge
+        assert abs(sdr.center_freq - 107.9e6) < 1
+    finally:
+        _close(p)
+
+
+def test_seek_up_wraps_at_band_edge():
+    p, meta = _pipeline(freq=107.9e6)
+    try:
+        p._demod = _StubDemod(pilot=0.0)
+        p.start_seek(+1)
+        sdr = _FakeSdr(p._freq)
+        _drive(p, sdr, _SEEK_SETTLE_BLKS + 1)
+        assert abs(sdr.center_freq - _SEEK_FM_LO) < 1
+    finally:
+        _close(p)
+
+
+def test_seek_wrap_preserves_off_grid_offset():
+    # Manually tuned to an even tenth: the sweep stays on that grid
+    p, meta = _pipeline(freq=87.6e6)
+    try:
+        p._demod = _StubDemod(pilot=0.0)
+        p.start_seek(-1)
+        sdr = _FakeSdr(p._freq)
+        _drive(p, sdr, _SEEK_SETTLE_BLKS + 1)
+        assert abs(sdr.center_freq - 108.0e6) < 1
     finally:
         _close(p)
 

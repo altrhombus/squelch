@@ -31,7 +31,9 @@ from .dsp import PilotRecovery, StatefulResampler
 try:
     import pyfftw
     import pyfftw.interfaces.scipy_fft as _pf
-    from scipy.fft import set_backend as _set_fft_backend
+    # set_global_backend, not set_backend: the latter is a context manager
+    # and a bare call silently leaves pocketfft in charge.
+    from scipy.fft import set_global_backend as _set_fft_backend
     _set_fft_backend(_pf)
     pyfftw.interfaces.cache.enable()
     pyfftw.interfaces.cache.set_keepalive_time(30)

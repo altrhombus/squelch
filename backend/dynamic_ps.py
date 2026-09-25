@@ -88,11 +88,14 @@ class DynamicPsAssembler:
             self._last_ps = ps
             self._last_change = now
             self._change_times.append(now)
-            self._change_times = [
-                t for t in self._change_times if now - t <= self.WINDOW_SECS
-            ]
             self._page_log.append(ps)
             del self._page_log[:-self.DEBUG_PAGES]
+        # Prune on every feed, not only on change: otherwise a burst that
+        # has since gone static leaves stale entries that re-trip the
+        # dynamic regime on the very next reception after it clears.
+        self._change_times = [
+            t for t in self._change_times if now - t <= self.WINDOW_SECS
+        ]
 
         # Assembly runs on every transition regardless of paging speed —
         # slow pagers (one page per 30-60 s) never qualify as "dynamic" for
@@ -112,6 +115,9 @@ class DynamicPsAssembler:
         if self._dynamic:
             if now - self._last_change > self.STATIC_SECS:
                 self._dynamic = False
+                # The burst is over — forget it, or its tail (still inside
+                # WINDOW_SECS, which outlasts STATIC_SECS) re-trips dynamic.
+                self._change_times.clear()
         elif len(self._change_times) >= self.DYNAMIC_CHANGES:
             self._dynamic = True
 

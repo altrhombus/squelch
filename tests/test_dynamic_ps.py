@@ -241,3 +241,19 @@ async def test_radiotext_wins_over_dynamic_ps():
     # Dynamic PS must not overwrite RadioText-derived track info
     assert (state.artist, state.title) == ("Real Artist", "Real Title")
     state.update_tune(91.1e6, "fm")
+
+
+def test_dynamic_regime_clears_without_flicker_after_burst():
+    # A short paging burst trips "dynamic"; once the PS has been static
+    # long enough it must clear and stay clear on later receptions.
+    asm, clock = make()
+    for ps in ["AAAAAAAA", "BBBBBBBB", "CCCCCCCC", "DDDDDDDD"]:
+        asm.feed(ps)
+        clock.tick(1.0)
+    assert asm.feed("DDDDDDDD").dynamic is True
+    clock.tick(asm.STATIC_SECS + 1)
+    states = []
+    for _ in range(6):
+        states.append(asm.feed("DDDDDDDD").dynamic)
+        clock.tick(1.0)
+    assert states == [False] * 6

@@ -117,7 +117,7 @@ The script builds `librtlsdr` from the RTL-SDR Blog fork (the distro package is 
 sudo apt-get remove -y rtl-sdr librtlsdr-dev librtlsdr0 2>/dev/null || true
 sudo apt-get install -y libusb-1.0-0-dev cmake build-essential git python3 python3-venv python3-numpy python3-scipy
 git clone --depth 1 https://github.com/rtlsdrblog/rtl-sdr-blog
-cmake -S rtl-sdr-blog -B rtl-sdr-blog/build -DDETACH_KERNEL_DRIVER=ON
+cmake -S rtl-sdr-blog -B rtl-sdr-blog/build -DDETACH_KERNEL_DRIVER=ON -DINSTALL_UDEV_RULES=ON
 make -C rtl-sdr-blog/build -j$(nproc) && sudo make -C rtl-sdr-blog/build install && sudo ldconfig
 
 # Block the conflicting kernel DVB driver
@@ -125,7 +125,8 @@ echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/rtl-blocklist.conf
 sudo modprobe -r dvb_usb_rtl28xxu 2>/dev/null || true
 
 # Optional: HD Radio (not in apt — build from source)
-sudo apt-get install -y cmake libfftw3-dev librtlsdr-dev build-essential
+# (no librtlsdr-dev: it would reinstall the apt library beside the fork)
+sudo apt-get install -y cmake libfftw3-dev pkg-config build-essential
 git clone --depth 1 https://github.com/theori-io/nrsc5
 cmake -S nrsc5 -B nrsc5/build -DUSE_RTLSDR=ON && make -C nrsc5/build -j$(nproc)
 sudo make -C nrsc5/build install && sudo ldconfig

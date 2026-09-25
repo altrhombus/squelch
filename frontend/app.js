@@ -90,8 +90,11 @@ function formatFreq(f, band = currentBand) {
   return Number(f).toFixed(BANDS[band].decimals);
 }
 
+// Escapes for both text and quoted-attribute contexts — station names and
+// titles arrive off the air (RDS/HD) and must be treated as untrusted.
 function esc(s) {
-  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 async function api(method, path, body) {
